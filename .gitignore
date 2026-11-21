@@ -1,0 +1,8 @@
+.DS_Store
+build/
+dist/
+*.app/
+NotchBanner
+Resources/banner-math.svg
+*.mov
+.tmp/
