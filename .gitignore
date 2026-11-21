@@ -1,8 +1,8 @@
 .DS_Store
-build/
-dist/
+/build/
+/dist/
 *.app/
-NotchBanner
+/NotchBanner
 Resources/banner-math.svg
 *.mov
 .tmp/
