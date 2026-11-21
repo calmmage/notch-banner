@@ -49,6 +49,8 @@ Most notch utilities put static pills around the camera cutout. **NotchBanner** 
 - **Zero-Pixel 4K+ Textures**: Physical-scale procedural velvet micro-pile & damask (zero blocky cells even across 5K displays), `8192×8192` mathematical atlases (`4K×4K` per plate), `16×` anisotropic filtering, and `4× MSAA`.
 - **5 Bottom Cutout Shapes**: **Straight (no cutout)** by default so the velvet waves freely, plus **Swallowtail (V-cut)**, **Pointed (Pennant)**, **Arched**, and **Scalloped** — all with matching antique-gold double-braid hem trim.
 - **Live 4K Info Board Plugin API**: Render daily digests, CI dashboards, or custom status briefings directly onto the waving velvet via `~/.config/notch-banner/board.json` or `--text`.
+- **Hover Transparency**: Smoothly fades transparent when your mouse hovers over the curtain (`22%`), and fades even further (`8%`, including the top collar) near the top border so menu bar icons and browser tabs stay completely readable and clickable.
+- **Persistent Banner Studio Window**: Left-click the menu bar flag to open a persistent 3-tab floating window (**Now (Live)** · **Physics & Quality** · **Random Rotation**) — stays open while you tweak live patterns, colours, cutouts, arbitrary width/height/opacity sliders, presets (including **Ultra Short** thin top valance), physics, and rotation pools. Right-click for the quick menu.
 - **6 Quality Tiers + Live Physics Controls + FPS Diagnostics HUD**: Tune `Low → Ultra` (up to 16,000 nodes & 120 Hz ProMotion), wind strength, physical scale, mass, stiffness, damping, and pleat fullness with a live FPS sparkline HUD.
 - **Click-Through & Native**: Pure Swift + Metal (`NSWindow.ignoresMouseEvents = true`), zero Electron, zero external runtime dependencies.
 

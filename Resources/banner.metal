@@ -236,9 +236,12 @@ fragment float4 clothVelvet(Vertex in [[stage_in]],
     }
 
     // The upper collar unites the two shoulders and camera cutout in a single
-    // uninterrupted black surface. Embroidery only emerges below its lower lip.
-    float reveal = smoothstep(collar, collar + .042, in.drop);
+    // uninterrupted black surface. Scaled by borderScale so Ultra Short curtains show crisp velvet.
+    // extra.z = collarOpacity (1.0 at rest; fades smoothly when hovering near the top border).
+    float reveal = smoothstep(collar, collar + .034 / borderScale, in.drop);
     color = mix(float3(.004,.004,.006) * (1. + .14 * fineWeave), color, reveal);
-    float coverage = mix(1., fabric.y, reveal);
+    float collarAlpha = extra.z > 0.0001 ? extra.z : 1.0;
+    if (extra.w > 0.5) collarAlpha = extra.z;
+    float coverage = mix(collarAlpha, fabric.y, reveal);
     return float4(color * coverage, coverage);
 }

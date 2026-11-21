@@ -58,8 +58,21 @@ func batteryInfo() -> (Int, Bool)? {
 // MARK: - Enums & Settings
 
 enum BannerLength: Int, CaseIterable {
-    case hidden, short, half, full
-    var title: String { ["Hide", "Short", "Half height", "Full height"][rawValue] }
+    case hidden, ultraShort, short, half, full
+    var title: String { ["Hide", "Ultra short", "Short", "Half height", "Full height"][rawValue] }
+    var shortTitle: String { ["Hide", "Ultra short", "Short", "Half", "Full"][rawValue] }
+    func points(notch: CGFloat, available: CGFloat) -> CGFloat {
+        switch self {
+        case .hidden: return 0
+        case .ultraShort: return min(notch + 68, available)
+        case .short: return min(notch + 312, available)
+        case .half: return (notch + available) * 0.5
+        case .full: return available
+        }
+    }
+    func fraction(notch: CGFloat, available: CGFloat) -> Double {
+        Double(points(notch: notch, available: available) / max(available, 1))
+    }
 }
 
 enum BannerDye: Int, CaseIterable {
@@ -87,8 +100,9 @@ enum BannerPrint: Int, CaseIterable {
 }
 
 enum BannerWidth: String, CaseIterable {
-    case notch, wide, half, nearFull = "near-full"
-    var title: String { ["Notch", "Wide", "Half screen", "Near full screen"][Self.allCases.firstIndex(of: self)!] }
+    case notch, wide, half, nearFull = "near-full", full
+    var title: String { ["Notch", "Wide", "Half screen", "Near full screen", "Full screen"][Self.allCases.firstIndex(of: self)!] }
+    var shortTitle: String { ["Notch", "Wide", "Half", "Near full", "Full"][Self.allCases.firstIndex(of: self)!] }
     func rod(notch: CGFloat, screen: CGFloat) -> CGFloat {
         let base = min(screen, notch + 96)
         switch self {
@@ -96,7 +110,11 @@ enum BannerWidth: String, CaseIterable {
         case .wide: return max(base, screen * 0.30)
         case .half: return max(base, screen * 0.50)
         case .nearFull: return max(base, screen * 0.85)
+        case .full: return screen
         }
+    }
+    func fraction(notch: CGFloat, screen: CGFloat) -> Double {
+        Double(rod(notch: notch, screen: screen) / max(screen, 1))
     }
 }
 
@@ -189,7 +207,7 @@ struct BannerConfig: Codable, Equatable {
     var minutes: Double = 5
     var patterns = BannerPrint.allCases.map(\.key)
     var colours = BannerDye.allCases.map(\.key)
-    var widths = BannerWidth.allCases.map(\.rawValue)
+    var widths = [BannerWidth.notch, .wide, .half, .nearFull].map(\.rawValue)
     var cutouts = [BannerCutout.none.rawValue]
     var quality = BannerQuality.high.rawValue
     var windStrength: Double = 1.0
@@ -198,7 +216,14 @@ struct BannerConfig: Codable, Equatable {
     var stiffness: Double = 1.0
     var damping: Double = 0.65
     var pleats: Double = 1.0
-    static let everyChoices: [(String, Double)] = [("1 min", 1), ("5 min", 5), ("15 min", 15), ("30 min", 30), ("1 hour", 60), ("Never", 0)]
+    var opacity: Double = 1.0
+    var widthFraction: Double? = nil
+    var heightFraction: Double? = nil
+    var fadeOnHover: Bool = true
+    var hoverOpacity: Double = 0.22
+    var topHoverOpacity: Double = 0.08
+    var topHoverZone: Double = 115
+    static let everyChoices: [(String, Double)] = [("Never", 0), ("1 min", 1), ("5 min", 5), ("15 min", 15), ("30 min", 30), ("1 hour", 60)]
 
     init() {}
     init(from decoder: Decoder) throws {
@@ -206,7 +231,7 @@ struct BannerConfig: Codable, Equatable {
         minutes = try c.decodeIfPresent(Double.self, forKey: .minutes) ?? 5
         patterns = try c.decodeIfPresent([String].self, forKey: .patterns) ?? BannerPrint.allCases.map(\.key)
         colours = try c.decodeIfPresent([String].self, forKey: .colours) ?? BannerDye.allCases.map(\.key)
-        widths = try c.decodeIfPresent([String].self, forKey: .widths) ?? BannerWidth.allCases.map(\.rawValue)
+        widths = try c.decodeIfPresent([String].self, forKey: .widths) ?? [BannerWidth.notch, .wide, .half, .nearFull].map(\.rawValue)
         cutouts = try c.decodeIfPresent([String].self, forKey: .cutouts) ?? [BannerCutout.none.rawValue]
         quality = try c.decodeIfPresent(String.self, forKey: .quality) ?? BannerQuality.high.rawValue
         windStrength = try c.decodeIfPresent(Double.self, forKey: .windStrength) ?? 1.0
@@ -215,6 +240,13 @@ struct BannerConfig: Codable, Equatable {
         stiffness = try c.decodeIfPresent(Double.self, forKey: .stiffness) ?? 1.0
         damping = try c.decodeIfPresent(Double.self, forKey: .damping) ?? 0.65
         pleats = try c.decodeIfPresent(Double.self, forKey: .pleats) ?? 1.0
+        opacity = try c.decodeIfPresent(Double.self, forKey: .opacity) ?? 1.0
+        widthFraction = try c.decodeIfPresent(Double.self, forKey: .widthFraction)
+        heightFraction = try c.decodeIfPresent(Double.self, forKey: .heightFraction)
+        fadeOnHover = try c.decodeIfPresent(Bool.self, forKey: .fadeOnHover) ?? true
+        hoverOpacity = try c.decodeIfPresent(Double.self, forKey: .hoverOpacity) ?? 0.22
+        topHoverOpacity = try c.decodeIfPresent(Double.self, forKey: .topHoverOpacity) ?? 0.08
+        topHoverZone = try c.decodeIfPresent(Double.self, forKey: .topHoverZone) ?? 115
     }
     static func load() -> BannerConfig {
         if let d = try? Data(contentsOf: AppPaths.configURL), let f = try? JSONDecoder().decode(BannerConfig.self, from: d) { return f }
@@ -863,6 +895,7 @@ final class ClothRenderer {
     var dye = BannerDye.garnet
     var collarDepth: Float = 0.03
     var bodyOpacity: Float = 1
+    var collarOpacity: Float = 1
     var print: BannerPrint = .robe { didSet { if oldValue != print { loadPrint() } } }
     private(set) var mathematics: MTLTexture?
     private(set) var boardTexture: MTLTexture?
@@ -932,7 +965,7 @@ final class ClothRenderer {
         else if mathematics == nil && print != .silk { style = .robe }
         else { style = print }
         var fabric = SIMD4<Float>(collarDepth, bodyOpacity, Float(style.rawValue), cloth.tail)
-        var extra = SIMD4<Float>(cloth.widthPoints / 330.0, Float(cloth.cutout.shaderId), 0, 0)
+        var extra = SIMD4<Float>(cloth.widthPoints / 330.0, Float(cloth.cutout.shaderId), collarOpacity, 1.0)
         encoder.setFragmentBytes(&fabric, length: MemoryLayout.size(ofValue: fabric), index: 1)
         encoder.setFragmentBytes(&extra, length: MemoryLayout.size(ofValue: extra), index: 2)
         encoder.drawIndexedPrimitives(type: .triangle, indexCount: cloth.indices.count, indexType: .uint16, indexBuffer: indices, indexBufferOffset: 0)
@@ -1046,86 +1079,315 @@ struct BannerStatsHUDView: View {
 
 final class SettingsStore: ObservableObject {
     @Published var settings: BannerConfig
-    init(_ settings: BannerConfig) { self.settings = settings }
+    @Published var isVisible: Bool
+    @Published var currentPrint: BannerPrint
+    @Published var currentDye: BannerDye
+    @Published var currentCutout: BannerCutout
+    @Published var widthFraction: Double
+    @Published var heightFraction: Double
+    @Published var screenWidth: CGFloat
+    @Published var screenHeight: CGFloat
+    @Published var notchWidth: CGFloat
+    @Published var notchHeight: CGFloat
+    @Published var tab: Int = 0
+
+    init(settings: BannerConfig, isVisible: Bool, print: BannerPrint, dye: BannerDye, cutout: BannerCutout,
+         widthFraction: Double, heightFraction: Double, screen: CGSize, notch: CGSize) {
+        self.settings = settings; self.isVisible = isVisible
+        self.currentPrint = print; self.currentDye = dye; self.currentCutout = cutout
+        self.widthFraction = widthFraction; self.heightFraction = heightFraction
+        self.screenWidth = screen.width; self.screenHeight = screen.height
+        self.notchWidth = notch.width; self.notchHeight = notch.height
+    }
 }
 
 struct BannerSettingsView: View {
-    @ObservedObject var store: SettingsStore
-    var onChange: (BannerConfig, Bool) -> Void
+    @ObservedObject var m: SettingsStore
+    var onSave: (BannerConfig, Bool) -> Void
+    var onSetNow: (BannerPrint?, BannerDye?, BannerCutout?, Double?, Double?, Double?) -> Void
+    var onToggleVisible: () -> Void
+    var onNext: () -> Void
     var onGust: () -> Void
     var onToggleStats: () -> Void
     var onShowBoard: () -> Void
     var onClose: () -> Void
 
+    let dyeSwatches: [BannerDye: Color] = [
+        .black: Color(red: 0.14, green: 0.14, blue: 0.16),
+        .garnet: Color(red: 0.48, green: 0.11, blue: 0.17),
+        .pine: Color(red: 0.09, green: 0.30, blue: 0.19),
+        .midnight: Color(red: 0.11, green: 0.17, blue: 0.38)
+    ]
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("NOTCH BANNER · PHYSICS & QUALITY").font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.white.opacity(0.75))
+            HStack(spacing: 6) {
+                Text("BANNER STUDIO").font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(Color(red: 0.92, green: 0.78, blue: 0.48))
                 Spacer()
+                Button(m.isVisible ? "Hide" : "Show") { onToggleVisible(); m.isVisible.toggle() }.controlSize(.small)
+                Button("Next", action: onNext).controlSize(.small)
                 Button("Gust", action: onGust).controlSize(.small)
                 Button("Board", action: onShowBoard).controlSize(.small)
-                Button("HUD", action: onToggleStats).controlSize(.small)
-                Button(action: onClose) { Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).foregroundColor(.white.opacity(0.6)) }.buttonStyle(.plain)
+                Button("FPS", action: onToggleStats).controlSize(.small)
+                Button(action: onClose) { Image(systemName: "xmark.circle.fill").font(.system(size: 14)).foregroundColor(.white.opacity(0.6)) }.buttonStyle(.plain)
             }
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Quality Tier").font(.system(size: 10, weight: .semibold)).foregroundColor(.white.opacity(0.65))
-                HStack(spacing: 4) {
-                    ForEach(BannerQuality.allCases, id: \.rawValue) { q in
-                        let on = store.settings.quality == q.rawValue
-                        Button(q.title) { store.settings.quality = q.rawValue; onChange(store.settings, true) }
-                            .font(.system(size: 10, weight: on ? .bold : .medium, design: .monospaced))
-                            .padding(.horizontal, 7).padding(.vertical, 4)
-                            .background(on ? Color(red: 0.72, green: 0.56, blue: 0.28) : Color.white.opacity(0.1))
-                            .foregroundColor(.white).cornerRadius(5).buttonStyle(.plain)
-                    }
+            HStack(spacing: 4) {
+                ForEach([(0, "Now (Live)"), (1, "Physics & Quality"), (2, "Random Rotation")], id: \.0) { idx, title in
+                    let on = m.tab == idx
+                    Button(title) { m.tab = idx }
+                        .font(.system(size: 11, weight: on ? .bold : .medium))
+                        .frame(maxWidth: .infinity).padding(.vertical, 5)
+                        .background(on ? Color(red: 0.72, green: 0.56, blue: 0.28) : Color.white.opacity(0.08))
+                        .foregroundColor(.white).cornerRadius(6).buttonStyle(.plain)
                 }
             }
             Divider().background(Color.white.opacity(0.14))
-            sliderRow("Wind", value: $store.settings.windStrength, range: 0...3.0, fmt: "%.2f×", rebuild: false)
-            sliderRow("Size (Scale)", value: $store.settings.scale, range: 0.5...2.5, fmt: "%.2f×", rebuild: true)
-            sliderRow("Mass", value: $store.settings.mass, range: 0.25...2.0, fmt: "%.2f kg/m²", rebuild: true)
-            sliderRow("Stiffness", value: $store.settings.stiffness, range: 0.3...2.5, fmt: "%.2f×", rebuild: true)
-            sliderRow("Damping", value: $store.settings.damping, range: 0.2...2.0, fmt: "%.2f", rebuild: false)
-            sliderRow("Pleats", value: $store.settings.pleats, range: 0.0...1.6, fmt: "%.2f×", rebuild: true)
-            Divider().background(Color.white.opacity(0.14))
+            if m.tab == 0 { nowTab } else if m.tab == 1 { physicsTab } else { rotationTab }
+        }
+        .padding(14).frame(width: 440)
+        .background(Color(red: 0.07, green: 0.08, blue: 0.10).opacity(0.96)).cornerRadius(13)
+        .overlay(RoundedRectangle(cornerRadius: 13).stroke(Color.white.opacity(0.18), lineWidth: 1))
+    }
+
+    var nowTab: some View {
+        VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Bottom Cutout").font(.system(size: 10, weight: .semibold)).foregroundColor(.white.opacity(0.65))
+                sectionLabel("PATTERN RIGHT NOW")
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
+                    ForEach(BannerPrint.allCases, id: \.rawValue) { p in
+                        let short = ["Robe", "Notebook", "Catenary", "Lorenz", "Doubling", "Brachist.", "Teal Silk", "Live Board"][p.rawValue]
+                        chip(short, active: m.currentPrint == p, accent: Color(red: 0.72, green: 0.56, blue: 0.28)) {
+                            m.currentPrint = p; m.isVisible = true; onSetNow(p, nil, nil, nil, nil, nil)
+                        }
+                    }
+                }
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                sectionLabel("COLOUR")
+                HStack(spacing: 4) {
+                    ForEach(BannerDye.allCases, id: \.rawValue) { d in
+                        let on = m.currentDye == d
+                        Button(action: { m.currentDye = d; m.isVisible = true; onSetNow(nil, d, nil, nil, nil, nil) }) {
+                            HStack(spacing: 4) {
+                                Circle().fill(dyeSwatches[d] ?? .gray).frame(width: 10, height: 10)
+                                    .overlay(Circle().stroke(Color.white.opacity(0.5), lineWidth: 0.8))
+                                Text(d.title).font(.system(size: 10, weight: on ? .bold : .regular))
+                            }
+                            .padding(.horizontal, 6).padding(.vertical, 4)
+                            .background(on ? Color.white.opacity(0.22) : Color.white.opacity(0.07))
+                            .foregroundColor(.white).cornerRadius(5)
+                        }.buttonStyle(.plain)
+                    }
+                }
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                sectionLabel("BOTTOM CUTOUT RIGHT NOW")
                 HStack(spacing: 4) {
                     ForEach(BannerCutout.allCases, id: \.rawValue) { c in
-                        let on = store.settings.cutouts.contains(c.rawValue)
-                        Button(c == .none ? "Straight" : c.title.components(separatedBy: " ").first ?? c.title) {
-                            if on { if store.settings.cutouts.count > 1 { store.settings.cutouts.removeAll { $0 == c.rawValue } } }
-                            else { store.settings.cutouts.append(c.rawValue) }
-                            onChange(store.settings, true)
+                        let lbl = c == .none ? "Straight" : (c.title.components(separatedBy: " ").first ?? c.title)
+                        chip(lbl, active: m.currentCutout == c, accent: Color(red: 0.26, green: 0.44, blue: 0.62)) {
+                            m.currentCutout = c; m.isVisible = true; onSetNow(nil, nil, c, nil, nil, nil)
                         }
-                        .font(.system(size: 10, weight: on ? .bold : .regular))
-                        .padding(.horizontal, 6).padding(.vertical, 4)
-                        .background(on ? Color(red: 0.26, green: 0.44, blue: 0.62) : Color.white.opacity(0.08))
-                        .foregroundColor(.white).cornerRadius(5).buttonStyle(.plain)
                     }
                 }
             }
+            Divider().background(Color.white.opacity(0.12))
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    sectionLabel("WIDTH (PRESETS OR FREE SLIDER)")
+                    Spacer()
+                    Text("\(Int((m.widthFraction * 100).rounded()))% · \(Int((m.widthFraction * Double(m.screenWidth)).rounded())) pt")
+                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.75))
+                }
+                HStack(spacing: 4) {
+                    ForEach(BannerWidth.allCases, id: \.rawValue) { w in
+                        let f = w.fraction(notch: m.notchWidth, screen: m.screenWidth)
+                        chip(w.shortTitle, active: abs(m.widthFraction - f) < 0.025, accent: Color(red: 0.26, green: 0.44, blue: 0.62)) {
+                            m.widthFraction = f; m.settings.widthFraction = f; m.isVisible = true; onSetNow(nil, nil, nil, f, nil, nil)
+                        }
+                    }
+                }
+                Slider(value: Binding(get: { m.widthFraction }, set: { v in
+                    m.widthFraction = v; m.settings.widthFraction = v; m.isVisible = true; onSetNow(nil, nil, nil, v, nil, nil)
+                }), in: 0.14...1.0)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    sectionLabel("HEIGHT (PRESETS OR FREE SLIDER)")
+                    Spacer()
+                    Text("\(Int((m.heightFraction * 100).rounded()))% · \(Int((m.heightFraction * Double(m.screenHeight)).rounded())) pt")
+                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.75))
+                }
+                HStack(spacing: 4) {
+                    ForEach([BannerLength.ultraShort, .short, .half, .full], id: \.rawValue) { l in
+                        let f = l.fraction(notch: m.notchHeight, available: m.screenHeight)
+                        chip(l.shortTitle, active: abs(m.heightFraction - f) < 0.02, accent: Color(red: 0.26, green: 0.44, blue: 0.62)) {
+                            m.heightFraction = f; m.settings.heightFraction = f; m.isVisible = true; onSetNow(nil, nil, nil, nil, f, nil)
+                        }
+                    }
+                }
+                Slider(value: Binding(get: { m.heightFraction }, set: { v in
+                    m.heightFraction = v; m.settings.heightFraction = v; m.isVisible = true; onSetNow(nil, nil, nil, nil, v, nil)
+                }), in: 0.06...1.0)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    sectionLabel("OPACITY")
+                    Spacer()
+                    ForEach([1.0, 0.72, 0.46], id: \.self) { o in
+                        let on = abs(m.settings.opacity - o) < 0.03
+                        Button("\(Int((o * 100).rounded()))%") { m.settings.opacity = o; onSetNow(nil, nil, nil, nil, nil, o) }
+                            .font(.system(size: 9, weight: on ? .bold : .regular, design: .monospaced))
+                            .padding(.horizontal, 5).padding(.vertical, 2)
+                            .background(on ? Color.white.opacity(0.22) : Color.white.opacity(0.08))
+                            .foregroundColor(.white).cornerRadius(4).buttonStyle(.plain)
+                    }
+                    Text("\(Int((m.settings.opacity * 100).rounded()))%").font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.85)).frame(width: 38, alignment: .trailing)
+                }
+                Slider(value: Binding(get: { m.settings.opacity }, set: { v in m.settings.opacity = v; onSetNow(nil, nil, nil, nil, nil, v) }), in: 0.10...1.0)
+            }
+            Divider().background(Color.white.opacity(0.12))
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Transparent on mouse hover", isOn: Binding(get: { m.settings.fadeOnHover }, set: {
+                    m.settings.fadeOnHover = $0; onSave(m.settings, false)
+                })).font(.system(size: 11, weight: .semibold)).foregroundColor(.white.opacity(0.9))
+                if m.settings.fadeOnHover {
+                    sliderRow("Hover alpha", value: $m.settings.hoverOpacity, range: 0.0...0.85, fmt: "%.0f%%", scaleDisplay: 100, rebuild: false)
+                    sliderRow("Top border", value: $m.settings.topHoverOpacity, range: 0.0...0.50, fmt: "%.0f%%", scaleDisplay: 100, rebuild: false)
+                    sliderRow("Top zone", value: $m.settings.topHoverZone, range: 40...240, fmt: "%.0f pt", rebuild: false)
+                }
+            }
+        }
+    }
+
+    var physicsTab: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            VStack(alignment: .leading, spacing: 4) {
+                sectionLabel("QUALITY TIER")
+                HStack(spacing: 4) {
+                    ForEach(BannerQuality.allCases, id: \.rawValue) { q in
+                        chip(q.title, active: m.settings.quality == q.rawValue, accent: Color(red: 0.72, green: 0.56, blue: 0.28)) {
+                            m.settings.quality = q.rawValue; onSave(m.settings, true)
+                        }
+                    }
+                }
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    sectionLabel("WIND STRENGTH")
+                    Spacer()
+                    ForEach([("Still", 0.0), ("Breeze", 1.0), ("Gale", 2.1)], id: \.0) { lbl, v in
+                        Button(lbl) { m.settings.windStrength = v; onSave(m.settings, false) }
+                            .font(.system(size: 9, weight: abs(m.settings.windStrength - v) < 0.05 ? .bold : .regular))
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(abs(m.settings.windStrength - v) < 0.05 ? Color.white.opacity(0.22) : Color.white.opacity(0.08))
+                            .foregroundColor(.white).cornerRadius(4).buttonStyle(.plain)
+                    }
+                }
+                sliderRow("Wind", value: $m.settings.windStrength, range: 0...3.0, fmt: "%.2f×", rebuild: false)
+            }
+            Divider().background(Color.white.opacity(0.12))
+            sliderRow("Size (Scale)", value: $m.settings.scale, range: 0.4...2.5, fmt: "%.2f×", rebuild: true)
+            sliderRow("Mass", value: $m.settings.mass, range: 0.20...2.2, fmt: "%.2f kg/m²", rebuild: true)
+            sliderRow("Stiffness", value: $m.settings.stiffness, range: 0.25...2.5, fmt: "%.2f×", rebuild: true)
+            sliderRow("Damping", value: $m.settings.damping, range: 0.15...2.0, fmt: "%.2f", rebuild: false)
+            sliderRow("Pleats", value: $m.settings.pleats, range: 0.0...1.6, fmt: "%.2f×", rebuild: true)
             HStack {
                 Spacer()
                 Button("Reset Theater Velvet Defaults") {
-                    store.settings.quality = BannerQuality.high.rawValue
-                    store.settings.windStrength = 1.0; store.settings.scale = 1.0; store.settings.mass = 0.85
-                    store.settings.stiffness = 1.0; store.settings.damping = 0.65; store.settings.pleats = 1.0
-                    store.settings.cutouts = [BannerCutout.none.rawValue]
-                    onChange(store.settings, true)
+                    m.settings.quality = BannerQuality.high.rawValue
+                    m.settings.windStrength = 1.0; m.settings.scale = 1.0; m.settings.mass = 0.85
+                    m.settings.stiffness = 1.0; m.settings.damping = 0.65; m.settings.pleats = 1.0
+                    m.settings.opacity = 1.0; m.settings.fadeOnHover = true
+                    m.settings.hoverOpacity = 0.22; m.settings.topHoverOpacity = 0.08; m.settings.topHoverZone = 115
+                    onSave(m.settings, true)
                 }.controlSize(.small)
             }
         }
-        .padding(14).frame(width: 390)
-        .background(Color(red: 0.07, green: 0.08, blue: 0.10).opacity(0.95)).cornerRadius(12)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.16), lineWidth: 1))
     }
 
-    func sliderRow(_ label: String, value: Binding<Double>, range: ClosedRange<Double>, fmt: String, rebuild: Bool) -> some View {
+    var rotationTab: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    sectionLabel("AUTO-SWITCH INTERVAL")
+                    Spacer()
+                    Text(m.settings.minutes < 0.5 ? "Never" : "\(Int(m.settings.minutes.rounded())) min")
+                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.8))
+                }
+                HStack(spacing: 4) {
+                    ForEach(BannerConfig.everyChoices, id: \.0) { lbl, v in
+                        chip(lbl, active: abs(m.settings.minutes - v) < 0.25, accent: Color(red: 0.72, green: 0.56, blue: 0.28)) {
+                            m.settings.minutes = v; onSave(m.settings, false)
+                        }
+                    }
+                }
+                Slider(value: Binding(get: { m.settings.minutes }, set: { m.settings.minutes = $0.rounded(); onSave(m.settings, false) }), in: 0...120)
+            }
+            Divider().background(Color.white.opacity(0.12))
+            VStack(alignment: .leading, spacing: 4) {
+                sectionLabel("PATTERNS IN ROTATION")
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
+                    ForEach(BannerPrint.allCases, id: \.rawValue) { p in
+                        let short = ["Robe", "Notebook", "Catenary", "Lorenz", "Doubling", "Brachist.", "Teal Silk", "Live Board"][p.rawValue]
+                        chip(short, active: m.settings.patterns.contains(p.key), accent: Color(red: 0.26, green: 0.44, blue: 0.62)) {
+                            togglePool(&m.settings.patterns, p.key); onSave(m.settings, false)
+                        }
+                    }
+                }
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                sectionLabel("COLOURS IN ROTATION")
+                HStack(spacing: 4) {
+                    ForEach(BannerDye.allCases, id: \.rawValue) { d in
+                        chip(d.title, active: m.settings.colours.contains(d.key), accent: Color(red: 0.26, green: 0.44, blue: 0.62)) {
+                            togglePool(&m.settings.colours, d.key); onSave(m.settings, false)
+                        }
+                    }
+                }
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                sectionLabel("WIDTHS IN ROTATION (CLEARS FREE WIDTH LOCK)")
+                HStack(spacing: 4) {
+                    ForEach(BannerWidth.allCases, id: \.rawValue) { w in
+                        chip(w.shortTitle, active: m.settings.widths.contains(w.rawValue), accent: Color(red: 0.26, green: 0.44, blue: 0.62)) {
+                            m.settings.widthFraction = nil; togglePool(&m.settings.widths, w.rawValue); onSave(m.settings, false)
+                        }
+                    }
+                }
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                sectionLabel("CUTOUTS IN ROTATION")
+                HStack(spacing: 4) {
+                    ForEach(BannerCutout.allCases, id: \.rawValue) { c in
+                        let lbl = c == .none ? "Straight" : (c.title.components(separatedBy: " ").first ?? c.title)
+                        chip(lbl, active: m.settings.cutouts.contains(c.rawValue), accent: Color(red: 0.26, green: 0.44, blue: 0.62)) {
+                            togglePool(&m.settings.cutouts, c.rawValue); onSave(m.settings, true)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    func togglePool(_ arr: inout [String], _ key: String) {
+        if let i = arr.firstIndex(of: key) { if arr.count > 1 { arr.remove(at: i) } } else { arr.append(key) }
+    }
+    func sectionLabel(_ text: String) -> some View {
+        Text(text).font(.system(size: 9.5, weight: .bold, design: .monospaced)).foregroundColor(.white.opacity(0.55))
+    }
+    func chip(_ label: String, active: Bool, accent: Color, action: @escaping () -> Void) -> some View {
+        Button(label, action: action)
+            .font(.system(size: 10, weight: active ? .bold : .regular))
+            .frame(maxWidth: .infinity).padding(.horizontal, 6).padding(.vertical, 4)
+            .background(active ? accent : Color.white.opacity(0.08))
+            .foregroundColor(.white).cornerRadius(5).buttonStyle(.plain)
+    }
+    func sliderRow(_ label: String, value: Binding<Double>, range: ClosedRange<Double>, fmt: String, scaleDisplay: Double = 1, rebuild: Bool) -> some View {
         HStack(spacing: 8) {
-            Text(label).font(.system(size: 11, weight: .medium)).foregroundColor(.white.opacity(0.8)).frame(width: 82, alignment: .leading)
-            Slider(value: Binding(get: { value.wrappedValue }, set: { value.wrappedValue = $0; onChange(store.settings, rebuild) }), in: range)
-            Text(String(format: fmt, value.wrappedValue)).font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.85)).frame(width: 72, alignment: .trailing)
+            Text(label).font(.system(size: 11, weight: .medium)).foregroundColor(.white.opacity(0.82)).frame(width: 82, alignment: .leading)
+            Slider(value: Binding(get: { value.wrappedValue }, set: { value.wrappedValue = $0; onSave(m.settings, rebuild) }), in: range)
+            Text(String(format: fmt, value.wrappedValue * scaleDisplay)).font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.85)).frame(width: 68, alignment: .trailing)
         }
     }
 }
@@ -1138,13 +1400,20 @@ final class BannerCanvas: MTKView, MTKViewDelegate {
     private var renderer: ClothRenderer?
     private var lastFrame = CACurrentMediaTime()
     private var clothWidth: Float = 1
+    private var clothHeight: Float = 1
     private var previousPointer: CGPoint?
     private var statsTimer: Double = 0
     private var smoothFps: Double = 60
     private var smoothFrameMs: Double = 16.6
+    private var smoothBodyOpacity: Float = 1
+    private var smoothCollarOpacity: Float = 1
     var dye = BannerDye.garnet { didSet { renderer?.dye = dye } }
     var print = BannerPrint.robe { didSet { renderer?.print = print } }
-    var bodyOpacity: Float = 1 { didSet { renderer?.bodyOpacity = bodyOpacity } }
+    var bodyOpacity: Float = 1
+    var fadeOnHover: Bool = true
+    var hoverOpacity: Float = 0.22
+    var topHoverOpacity: Float = 0.08
+    var topHoverZone: Float = 115
     var wind: Float = 1 { didSet { renderer?.cloth.wind = wind } }
     var damping: Float = 0.65 { didSet { renderer?.cloth.damping = damping } }
     func gust() { renderer?.cloth.gust() }
@@ -1179,7 +1448,7 @@ final class BannerCanvas: MTKView, MTKViewDelegate {
         sampleCount = wantedMsaa
         preferredFramesPerSecond = config.quality.fps
         drawableSize = CGSize(width: ceil(bounds.width * scale), height: ceil(bounds.height * scale))
-        clothWidth = Float(width)
+        clothWidth = Float(width); clothHeight = Float(height)
         let aspect = Float(height) / clothWidth
         let needRebuild = drop || renderer == nil ||
             renderer?.cloth.aspect != aspect ||
@@ -1194,14 +1463,12 @@ final class BannerCanvas: MTKView, MTKViewDelegate {
                 if drop { renderer?.cloth.beginRoll() }
             } catch { NSLog("Renderer init error: %@", error.localizedDescription) }
         }
-        renderer?.cloth.wind = wind
-        renderer?.cloth.damping = damping
-        renderer?.dye = dye
-        renderer?.print = print
-        renderer?.bodyOpacity = bodyOpacity
+        renderer?.cloth.wind = wind; renderer?.cloth.damping = damping
+        renderer?.dye = dye; renderer?.print = print
+        smoothBodyOpacity = bodyOpacity; smoothCollarOpacity = 1.0
+        renderer?.bodyOpacity = bodyOpacity; renderer?.collarOpacity = 1.0
         renderer?.collarDepth = Float(collar / width)
-        previousPointer = nil
-        lastFrame = CACurrentMediaTime()
+        previousPointer = nil; lastFrame = CACurrentMediaTime()
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
@@ -1217,6 +1484,25 @@ final class BannerCanvas: MTKView, MTKViewDelegate {
             renderer.cloth.brush(from: a, to: b, over: dtFrame)
         }
         previousPointer = pointer
+
+        var targetBody = bodyOpacity
+        var targetCollar: Float = 1.0
+        if fadeOnHover, let frame = window?.frame {
+            let dx = abs(Float(pointer.x - frame.midX))
+            let yFromTop = Float(frame.maxY - pointer.y)
+            if dx <= clothWidth * 0.54 && yFromTop >= -4 && yFromTop <= clothHeight + 18 {
+                let zone = max(30, topHoverZone)
+                let topMix = max(0, min(1, 1 - (yFromTop - 36) / max(zone - 36, 20)))
+                targetBody = min(bodyOpacity, hoverOpacity + (topHoverOpacity - hoverOpacity) * topMix)
+                targetCollar = 1.0 - (1.0 - max(topHoverOpacity, 0.06)) * topMix
+            }
+        }
+        let blend = min(1.0, Float(dtFrame) * (targetBody < smoothBodyOpacity ? 11.0 : 5.5))
+        smoothBodyOpacity += (targetBody - smoothBodyOpacity) * blend
+        smoothCollarOpacity += (targetCollar - smoothCollarOpacity) * blend
+        renderer.bodyOpacity = smoothBodyOpacity
+        renderer.collarOpacity = smoothCollarOpacity
+
         renderer.cloth.advance(seconds: dtFrame)
         let drawStart = CACurrentMediaTime()
         renderer.draw(encoder, viewport: SIMD2(Float(bounds.width), Float(bounds.height)) / clothWidth)
@@ -1263,6 +1549,39 @@ final class ScreenBanner {
         if let l = screen.auxiliaryTopLeftArea, let r = screen.auxiliaryTopRightArea { return (l.maxX + r.minX) / 2 }
         return screen.frame.midX
     }
+    var currentPrint: BannerPrint { prints.current ?? BannerConfig.load().printPool.first ?? .robe }
+    var currentDye: BannerDye { dyes.current ?? BannerConfig.load().dyePool.first ?? .garnet }
+    var currentCutout: BannerCutout { cutouts.current ?? BannerConfig.load().cutoutPool.first ?? .none }
+    var currentWidthFraction: Double {
+        if let wf = BannerConfig.load().widthFraction { return wf }
+        return (widths.current ?? .nearFull).fraction(notch: notchSize.width, screen: screen.frame.width)
+    }
+    var currentHeightFraction: Double {
+        if let hf = BannerConfig.load().heightFraction { return hf }
+        let len = length == .hidden ? lastLength : length
+        return len.fraction(notch: notchSize.height, available: screen.frame.height)
+    }
+
+    func setNow(print p: BannerPrint?, dye d: BannerDye?, cutout c: BannerCutout?,
+                widthFraction wf: Double?, heightFraction hf: Double?, opacity op: Double?) {
+        var f = BannerConfig.load()
+        var needsLayout = false, needsRebuild = false
+        if let p { _ = prints.advance([p]) }
+        if let d { _ = dyes.advance([d]) }
+        if let c { _ = cutouts.advance([c]); needsRebuild = true }
+        if let wf { f.widthFraction = wf; needsLayout = true }
+        if let hf { f.heightFraction = hf; needsLayout = true }
+        if let op { f.opacity = op }
+        f.save()
+        if length == .hidden { show(lastLength == .hidden ? .short : lastLength, drop: true, preserve: true); return }
+        if needsLayout || needsRebuild { show(lastLength == .hidden ? .short : lastLength, drop: false, preserve: true) }
+        else if let canvas = window?.contentView as? BannerCanvas {
+            canvas.print = currentPrint; canvas.dye = currentDye
+            canvas.bodyOpacity = Float(f.opacity); canvas.fadeOnHover = f.fadeOnHover
+            canvas.hoverOpacity = Float(f.hoverOpacity); canvas.topHoverOpacity = Float(f.topHoverOpacity); canvas.topHoverZone = Float(f.topHoverZone)
+            if p == .board { canvas.refreshBoard() }
+        }
+    }
 
     func scheduleSwitch() {
         timer?.invalidate(); timer = nil
@@ -1273,10 +1592,11 @@ final class ScreenBanner {
 
     func nextDesign() {
         guard window != nil else { return show(lastLength) }
-        let f = BannerConfig.load()
+        var f = BannerConfig.load()
         let oldW = widths.current, oldC = cutouts.current
+        if f.widthFraction != nil { f.widthFraction = nil; f.save() }
         prints.advance(f.printPool); dyes.advance(f.dyePool); widths.advance(f.widthPool); cutouts.advance(f.cutoutPool)
-        if widths.current != oldW || cutouts.current != oldC { show(lastLength, drop: widths.current != oldW) }
+        if widths.current != oldW || cutouts.current != oldC { show(lastLength, drop: widths.current != oldW, preserve: true) }
         else if let c = window?.contentView as? BannerCanvas { c.print = prints.current!; c.dye = dyes.current! }
         scheduleSwitch()
     }
@@ -1286,9 +1606,11 @@ final class ScreenBanner {
         guard window != nil else { return }
         let oldW = widths.current, oldC = cutouts.current
         _ = prints.keep(f.printPool); _ = dyes.keep(f.dyePool); _ = widths.keep(f.widthPool); _ = cutouts.keep(f.cutoutPool)
-        if rebuild || widths.current != oldW || cutouts.current != oldC { show(lastLength, drop: widths.current != oldW) }
+        if rebuild || widths.current != oldW || cutouts.current != oldC { show(lastLength, drop: false, preserve: true) }
         else if let c = window?.contentView as? BannerCanvas {
             c.wind = Float(f.windStrength); c.damping = Float(f.damping)
+            c.bodyOpacity = Float(f.opacity); c.fadeOnHover = f.fadeOnHover
+            c.hoverOpacity = Float(f.hoverOpacity); c.topHoverOpacity = Float(f.topHoverOpacity); c.topHoverZone = Float(f.topHoverZone)
             c.print = prints.current!; c.dye = dyes.current!
         }
         scheduleSwitch()
@@ -1322,10 +1644,12 @@ final class ScreenBanner {
         }
         let top = screen.frame.maxY, available = screen.frame.height
         let n = notchSize
-        let rawH: CGFloat = target == .short ? min(n.height + 312, available) : (target == .half ? (n.height + available) * 0.5 : available)
-        let clothH = target == .full ? max(120, rawH - 16) : rawH
+        let presetH = target.points(notch: n.height, available: available)
+        let rawH: CGFloat = f.heightFraction.map { max(n.height + 36, min(available, CGFloat($0) * available)) } ?? presetH
+        let clothH = rawH >= available - 4 ? max(80, available - 16) : rawH
         let winH = min(available, clothH + 36)
-        let rodW = (widths.current ?? .nearFull).rod(notch: n.width, screen: screen.frame.width)
+        let rodW: CGFloat = f.widthFraction.map { max(n.width + 40, min(screen.frame.width, CGFloat($0) * screen.frame.width)) }
+            ?? (widths.current ?? .nearFull).rod(notch: n.width, screen: screen.frame.width)
         let clothW = rodW / CGFloat(BannerCloth.rodSpan)
         let winW = min(screen.frame.width, 2 * clothH + clothW * 1.1)
         let frame = NSRect(x: centerX - winW / 2, y: top - winH, width: winW, height: winH)
@@ -1342,11 +1666,10 @@ final class ScreenBanner {
         }
         window?.setFrame(frame, display: false)
         if let canvas = window?.contentView as? BannerCanvas {
-            canvas.wind = Float(f.windStrength)
-            canvas.damping = Float(f.damping)
-            canvas.dye = dyes.current ?? .garnet
-            canvas.print = prints.current ?? .robe
-            canvas.bodyOpacity = Self.opacities[opacityIndex]
+            canvas.wind = Float(f.windStrength); canvas.damping = Float(f.damping)
+            canvas.dye = dyes.current ?? .garnet; canvas.print = prints.current ?? .robe
+            canvas.bodyOpacity = Float(f.opacity); canvas.fadeOnHover = f.fadeOnHover
+            canvas.hoverOpacity = Float(f.hoverOpacity); canvas.topHoverOpacity = Float(f.topHoverOpacity); canvas.topHoverZone = Float(f.topHoverZone)
             canvas.unfold(to: clothH, width: clothW, collar: n.height,
                           cutout: cutouts.current ?? .none, config: f.physicsConfig, drop: opening || drop)
         }
@@ -1362,6 +1685,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     lazy var menu: NSMenu = { let m = NSMenu(); m.delegate = self; m.autoenablesItems = false; return m }()
     var statsWindow: NSPanel?
     var settingsWindow: NSPanel?
+    var settingsStore: SettingsStore?
     var hotKeyRefs: [EventHotKeyRef] = []
     var hotKeyHandler: EventHandlerRef?
     var startWithBoard = false
@@ -1375,12 +1699,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         banners = NSScreen.screens.map { ScreenBanner(screen: $0) }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "flag.fill", accessibilityDescription: "NotchBanner")
-        item.button?.toolTip = "NotchBanner · ⌃⌥⌘B toggle"
-        item.menu = menu
+        item.button?.toolTip = "Click: Banner Studio window · Right-click: quick menu · ⌃⌥⌘B toggle"
+        item.button?.target = self
+        item.button?.action = #selector(statusClicked(_:))
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         statusItem = item
         registerHotkeys()
         if startWithBoard { activeBanner?.showBoard() }
         else { activeBanner?.show(.short, drop: true) }
+    }
+
+    @objc func statusClicked(_ sender: NSStatusBarButton) {
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
+        } else {
+            openSettings()
+        }
     }
 
     func registerHotkeys() {
@@ -1395,11 +1729,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             switch id.id {
             case 1: b.show(b.length == .hidden ? b.lastLength : .hidden)
             case 2:
-                let hs: [BannerLength] = [.short, .half, .full]
-                let next = hs[((hs.firstIndex(of: b.lastLength) ?? 0) + 1) % hs.count]
+                let hs: [BannerLength] = [.ultraShort, .short, .half, .full]
+                let next = hs[((hs.firstIndex(of: b.lastLength) ?? 1) + 1) % hs.count]
+                var f = BannerConfig.load(); f.heightFraction = nil; f.save()
                 b.show(next)
             case 3:
                 b.opacityIndex = (b.opacityIndex + 1) % ScreenBanner.opacities.count
+                var f = BannerConfig.load(); f.opacity = Double(ScreenBanner.opacities[b.opacityIndex]); f.save()
                 if b.length == .hidden { b.show(b.lastLength) }
                 (b.window?.contentView as? BannerCanvas)?.bodyOpacity = ScreenBanner.opacities[b.opacityIndex]
             default: b.nextDesign()
@@ -1427,25 +1763,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let it = m.addItem(withTitle: t, action: nil, keyEquivalent: ""); let sm = NSMenu(); sm.autoenablesItems = false
             m.setSubmenu(sm, for: it); return sm
         }
+        add("Open Banner Studio Window…", #selector(openSettings))
+        m.addItem(.separator())
         add(b.length == .hidden ? "Show Banner   ⌃⌥⌘B" : "Hide Banner   ⌃⌥⌘B", #selector(toggleBanner))
         add("Next Design   ⌃⌥⌘N", #selector(nextDesign))
         add("Show Live 4K Board", #selector(showBoard))
         add("Send Wind Gust", #selector(sendGust))
         m.addItem(.separator())
         let hSub = sub("Height")
-        for l in [BannerLength.short, .half, .full] { add(l.title, #selector(setHeight(_:)), tag: l.rawValue, on: b.lastLength == l, to: hSub) }
+        for l in [BannerLength.ultraShort, .short, .half, .full] { add(l.title, #selector(setHeight(_:)), tag: l.rawValue, on: f.heightFraction == nil && b.lastLength == l, to: hSub) }
         let qSub = sub("Quality")
         for (i, q) in BannerQuality.allCases.enumerated() { add(q.title, #selector(setQuality(_:)), tag: i, on: f.quality == q.rawValue, to: qSub) }
         let cSub = sub("Bottom Cutout")
         for (i, c) in BannerCutout.allCases.enumerated() { add(c.title, #selector(toggleCutout(_:)), tag: i, on: f.cutouts.contains(c.rawValue), to: cSub) }
-        let pSub = sub("Patterns")
-        for p in BannerPrint.allCases { add(p.title, #selector(togglePattern(_:)), tag: p.rawValue, on: f.patterns.contains(p.key), to: pSub) }
-        let dSub = sub("Colours")
-        for d in BannerDye.allCases { add(d.title, #selector(toggleDye(_:)), tag: d.rawValue, on: f.colours.contains(d.key), to: dSub) }
-        let wSub = sub("Widths")
-        for (i, w) in BannerWidth.allCases.enumerated() { add(w.title, #selector(toggleWidth(_:)), tag: i, on: f.widths.contains(w.rawValue), to: wSub) }
+        add("Transparent on mouse hover", #selector(toggleHoverFade), on: f.fadeOnHover)
         m.addItem(.separator())
-        add("Physics & Settings…", #selector(openSettings))
         add("Diagnostics HUD (FPS)", #selector(toggleStats), on: statsWindow?.isVisible == true)
         add("Quit NotchBanner", #selector(NSApplication.terminate(_:)))
     }
@@ -1461,12 +1793,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func nextDesign() { activeBanner?.nextDesign() }
     @objc func showBoard() { activeBanner?.showBoard() }
     @objc func sendGust() { (activeBanner?.window?.contentView as? BannerCanvas)?.gust() }
-    @objc func setHeight(_ i: NSMenuItem) { if let l = BannerLength(rawValue: i.tag) { activeBanner?.show(l) } }
+    @objc func toggleHoverFade() { edit { $0.fadeOnHover.toggle() } }
+    @objc func setHeight(_ i: NSMenuItem) { if let l = BannerLength(rawValue: i.tag) { var f = BannerConfig.load(); f.heightFraction = nil; f.save(); activeBanner?.show(l) } }
     @objc func setQuality(_ i: NSMenuItem) { edit(rebuild: true) { $0.quality = BannerQuality.allCases[i.tag].rawValue } }
     @objc func toggleCutout(_ i: NSMenuItem) { edit(rebuild: true) { flip(&$0.cutouts, BannerCutout.allCases[i.tag].rawValue) } }
-    @objc func togglePattern(_ i: NSMenuItem) { edit { flip(&$0.patterns, BannerPrint(rawValue: i.tag)!.key) } }
-    @objc func toggleDye(_ i: NSMenuItem) { edit { flip(&$0.colours, BannerDye(rawValue: i.tag)!.key) } }
-    @objc func toggleWidth(_ i: NSMenuItem) { edit { flip(&$0.widths, BannerWidth.allCases[i.tag].rawValue) } }
 
     @objc func toggleStats() {
         if let w = statsWindow, w.isVisible { w.orderOut(nil); return }
@@ -1487,16 +1817,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func openSettings() {
         if let w = settingsWindow, w.isVisible { w.orderOut(nil); return }
+        let b = activeBanner
+        let scr = b?.screen.frame.size ?? NSSize(width: 1512, height: 982)
+        let nch = b?.notchSize ?? NSSize(width: 190, height: 37)
+        let store = SettingsStore(
+            settings: BannerConfig.load(),
+            isVisible: (b?.length ?? .hidden) != .hidden,
+            print: b?.currentPrint ?? .robe,
+            dye: b?.currentDye ?? .garnet,
+            cutout: b?.currentCutout ?? .none,
+            widthFraction: b?.currentWidthFraction ?? 0.85,
+            heightFraction: b?.currentHeightFraction ?? 0.35,
+            screen: scr,
+            notch: nch
+        )
+        settingsStore = store
         let view = BannerSettingsView(
-            store: SettingsStore(BannerConfig.load()),
-            onChange: { [weak self] cfg, rebuild in cfg.save(); self?.banners.forEach { $0.applyConfig(rebuild: rebuild) } },
+            m: store,
+            onSave: { [weak self] cfg, rebuild in cfg.save(); self?.banners.forEach { $0.applyConfig(rebuild: rebuild) } },
+            onSetNow: { [weak self] p, d, c, wf, hf, op in self?.activeBanner?.setNow(print: p, dye: d, cutout: c, widthFraction: wf, heightFraction: hf, opacity: op) },
+            onToggleVisible: { [weak self] in self?.toggleBanner() },
+            onNext: { [weak self] in
+                guard let target = self?.activeBanner else { return }
+                target.nextDesign()
+                store.currentPrint = target.currentPrint; store.currentDye = target.currentDye
+                store.currentCutout = target.currentCutout; store.widthFraction = target.currentWidthFraction
+                store.isVisible = target.length != .hidden
+            },
             onGust: { [weak self] in self?.sendGust() },
             onToggleStats: { [weak self] in self?.toggleStats() },
-            onShowBoard: { [weak self] in self?.showBoard() },
+            onShowBoard: { [weak self] in self?.showBoard(); store.currentPrint = .board; store.isVisible = true },
             onClose: { [weak self] in self?.settingsWindow?.orderOut(nil) }
         )
         if settingsWindow == nil {
-            let p = NSPanel(contentRect: NSRect(x: 100, y: 120, width: 390, height: 420),
+            let p = NSPanel(contentRect: NSRect(x: 100, y: 120, width: 440, height: 540),
                             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             p.isOpaque = false; p.backgroundColor = .clear; p.hasShadow = true
             p.level = .floating; p.isMovableByWindowBackground = true
@@ -1505,10 +1859,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let host = NSHostingView(rootView: view)
         let fit = host.fittingSize
-        settingsWindow?.setContentSize(fit)
+        settingsWindow?.setContentSize(NSSize(width: 440, height: max(460, fit.height)))
         settingsWindow?.contentView = host
-        if let s = (activeBanner?.screen ?? NSScreen.main)?.visibleFrame {
-            settingsWindow?.setFrameOrigin(NSPoint(x: s.midX - fit.width / 2, y: s.minY + 60))
+        if let s = (b?.screen ?? NSScreen.main)?.visibleFrame {
+            settingsWindow?.setFrameOrigin(NSPoint(x: s.midX - 220, y: s.minY + 64))
         }
         settingsWindow?.orderFrontRegardless()
     }
