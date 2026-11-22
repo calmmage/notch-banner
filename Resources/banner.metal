@@ -85,6 +85,7 @@ fragment float4 clothVelvet(Vertex in [[stage_in]],
                             constant float4& s [[buffer(0)]],
                             constant float4& fabric [[buffer(1)]],
                             constant float4& extra [[buffer(2)]],
+                            constant float2& grid [[buffer(3)]],
                             texture2d<float> atlas [[texture(0)]],
                             texture2d<float> boardTex [[texture(1)]]) {
     float collar=fabric.x;
@@ -97,6 +98,17 @@ fragment float4 clothVelvet(Vertex in [[stage_in]],
 
     float y=uv.y;
     float hem=length - cutoutOffset(uv.x, cutout, tail);
+    if (style == 8) {
+        float2 cell = float2(uv.x, uv.y / max(hem, .0001)) * grid;
+        float2 nearest = abs(fract(cell + .5) - .5);
+        float2 px = nearest / max(fwidth(cell), float2(.0001));
+        float strand = 1. - smoothstep(.75, 1.7, min(px.x, px.y));
+        float knot = 1. - smoothstep(1.6, 2.8, metal::length(px));
+        float alpha = max(strand, knot) * fabric.y;
+        if (alpha < .01) discard_fragment();
+        float3 yarn = mix(float3(.44, .71, .73), float3(1., .83, .52), knot);
+        return float4(yarn * alpha, alpha);
+    }
     float2 physUV=uv * widthScale;          // physical fabric coords: identical crisp velvet grain at EVERY width!
     float aa=max(.00002, max(fwidth(uv.x), fwidth(uv.y)) * .66);
     float physAA=max(.00005, max(fwidth(physUV.x), fwidth(physUV.y)) * .66);
@@ -184,13 +196,13 @@ fragment float4 clothVelvet(Vertex in [[stage_in]],
     float3 color = mix(body, stitchColor, max(crest, border * .74));
 
     // 8K Mathematical notebook & 4K-per-tile plates (aspect-preserving, zero stretching, 16x anisotropic!)
-    if (style > 0 && style < 6) {
+    if ((style > 0 && style < 6) || style >= 9) {
         constexpr sampler printSampler(coord::normalized, address::repeat, filter::linear,
                                        mip_filter::linear, max_anisotropy(16));
         float edging = smoothstep(.058, .078, edgePhys) * smoothstep(.052, .078, turnPhys);
         float2 printUV;
         float printMask = 1.;
-        if (style == 1) {
+        if (style == 1 || style >= 13) {
             // Physical-scale repeating mathematical notebook (never stretched horizontally on wide curtains!)
             float tileW = 0.85 / widthScale;
             float tileH = tileW * 0.875;
@@ -207,7 +219,7 @@ fragment float4 clothVelvet(Vertex in [[stage_in]],
             float boxH = min(availH, box);
             float2 panel = float2((uv.x - (0.5 - boxW * 0.5)) / boxW,
                                   (uv.y - (padTop + (availH - boxH) * 0.5)) / boxH);
-            int tileID = style - 2;
+            int tileID = style >= 9 ? style - 9 : style - 2;
             printMask = all(panel >= 0.002) && all(panel <= 0.998) ? 1. : 0.;
             printUV = (clamp(panel, .001, .999) + float2(tileID % 2, tileID / 2)) * .5;
         }

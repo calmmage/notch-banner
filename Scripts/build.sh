@@ -14,7 +14,8 @@ if [[ ! -f "$ROOT/Resources/banner-math.png" || ! -f "$ROOT/Resources/banner-pla
 fi
 
 echo "Compiling NotchBanner (Swift + Metal, -O)..."
-swiftc -O \
+compile() {
+ swiftc -O -target "$1-apple-macos13.0" \
   -framework AppKit \
   -framework SwiftUI \
   -framework Metal \
@@ -24,7 +25,16 @@ swiftc -O \
   -framework CoreMedia \
   -framework CoreVideo \
   "$ROOT/Sources/NotchBanner/main.swift" \
-  -o "$ROOT/build/NotchBanner"
+  -o "$2"
+}
+if [[ "${2:-}" == "--universal" ]]; then
+  for arch in arm64 x86_64; do
+    compile "$arch" "$ROOT/build/NotchBanner-$arch"
+  done
+  lipo -create "$ROOT/build/NotchBanner-arm64" "$ROOT/build/NotchBanner-x86_64" -output "$ROOT/build/NotchBanner"
+else
+  compile "$(uname -m)" "$ROOT/build/NotchBanner"
+fi
 
 if [[ "${1:-}" == "--app" ]]; then
   APP="$ROOT/build/NotchBanner.app"
@@ -32,8 +42,7 @@ if [[ "${1:-}" == "--app" ]]; then
   mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
   cp "$ROOT/build/NotchBanner" "$APP/Contents/MacOS/NotchBanner"
   cp "$ROOT/Resources/banner.metal" "$APP/Contents/Resources/"
-  [[ -f "$ROOT/Resources/banner-math.png" ]] && cp "$ROOT/Resources/banner-math.png" "$APP/Contents/Resources/"
-  [[ -f "$ROOT/Resources/banner-plates.png" ]] && cp "$ROOT/Resources/banner-plates.png" "$APP/Contents/Resources/"
+  cp "$ROOT"/Resources/*.png "$APP/Contents/Resources/"
   [[ -f "$ROOT/assets/icon.icns" ]] && cp "$ROOT/assets/icon.icns" "$APP/Contents/Resources/AppIcon.icns"
   cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -43,8 +52,8 @@ if [[ "${1:-}" == "--app" ]]; then
   <key>CFBundleName</key><string>NotchBanner</string>
   <key>CFBundleDisplayName</key><string>Notch Banner</string>
   <key>CFBundleIdentifier</key><string>com.calmmage.notch-banner</string>
-  <key>CFBundleVersion</key><string>1.0.0</string>
-  <key>CFBundleShortVersionString</key><string>1.0.0</string>
+  <key>CFBundleVersion</key><string>1.2.0</string>
+  <key>CFBundleShortVersionString</key><string>1.2.0</string>
   <key>CFBundleExecutable</key><string>NotchBanner</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
@@ -53,6 +62,7 @@ if [[ "${1:-}" == "--app" ]]; then
 </dict>
 </plist>
 PLIST
+  codesign --force --sign - "$APP"
   echo "Built $APP"
 else
   echo "Built $ROOT/build/NotchBanner"

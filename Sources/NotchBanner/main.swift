@@ -82,8 +82,8 @@ enum BannerDye: Int, CaseIterable {
 }
 
 enum BannerPrint: Int, CaseIterable {
-    case robe, notebook, catenary, lorenz, bifurcation, brachistochrone, silk, board
-    var key: String { ["robe", "notebook", "catenary", "lorenz", "bifurcation", "brachistochrone", "silk", "board"][rawValue] }
+    case robe, notebook, catenary, lorenz, bifurcation, brachistochrone, silk, board, mesh, mandala, poincare, ink, guilloche, mosaic, waves, sketch
+    var key: String { ["robe", "notebook", "catenary", "lorenz", "bifurcation", "brachistochrone", "silk", "board", "mesh", "mandala", "poincare", "ink", "guilloche", "mosaic", "waves", "sketch"][rawValue] }
     var title: String {
         switch self {
         case .robe: return "Embroidered robe"
@@ -94,6 +94,36 @@ enum BannerPrint: Int, CaseIterable {
         case .brachistochrone: return "Brachistochrone"
         case .silk: return "Teal and gold silk"
         case .board: return "Live 4K info board"
+        case .mesh: return "Mesh"
+        case .mandala: return "Mandala"
+        case .poincare: return "Poincaré grid"
+        case .ink: return "Sumi-e ink"
+        case .guilloche: return "Guilloché"
+        case .mosaic: return "Mosaic"
+        case .waves: return "Seigaiha"
+        case .sketch: return "Sketch"
+        }
+    }
+    var shortTitle: String {
+        switch self {
+        case .robe: return "Robe"
+        case .notebook: return "Notebook"
+        case .lorenz: return "Lorenz"
+        case .bifurcation: return "Doubling"
+        case .brachistochrone: return "Brachist."
+        case .silk: return "Teal Silk"
+        case .board: return "Live Board"
+        default: return title
+        }
+    }
+    var textureFile: String? {
+        switch self {
+        case .mesh, .robe, .silk, .board: return nil
+        case .mandala, .poincare, .ink, .guilloche: return "banner-art-plates.png"
+        case .mosaic: return "banner-mosaic.png"
+        case .waves: return "banner-seigaiha.png"
+        case .sketch: return "banner-sketch.png"
+        default: return usesPlate ? "banner-plates.png" : "banner-math.png"
         }
     }
     var usesPlate: Bool { (BannerPrint.catenary.rawValue...BannerPrint.brachistochrone.rawValue).contains(rawValue) }
@@ -200,6 +230,7 @@ struct BannerPhysics: Equatable {
     var mass: Float = 0.85
     var stiffness: Float = 1.0
     var damping: Float = 0.65
+    var split = false
     var pleats: Float = 1.0
 }
 
@@ -219,6 +250,8 @@ struct BannerConfig: Codable, Equatable {
     var opacity: Double = 1.0
     var widthFraction: Double? = nil
     var heightFraction: Double? = nil
+    var offset: Double = 0
+    var split = false
     var fadeOnHover: Bool = true
     var hoverOpacity: Double = 0.22
     var topHoverOpacity: Double = 0.08
@@ -243,6 +276,8 @@ struct BannerConfig: Codable, Equatable {
         opacity = try c.decodeIfPresent(Double.self, forKey: .opacity) ?? 1.0
         widthFraction = try c.decodeIfPresent(Double.self, forKey: .widthFraction)
         heightFraction = try c.decodeIfPresent(Double.self, forKey: .heightFraction)
+        offset = min(1, max(-1, try c.decodeIfPresent(Double.self, forKey: .offset) ?? 0))
+        split = try c.decodeIfPresent(Bool.self, forKey: .split) ?? false
         fadeOnHover = try c.decodeIfPresent(Bool.self, forKey: .fadeOnHover) ?? true
         hoverOpacity = try c.decodeIfPresent(Double.self, forKey: .hoverOpacity) ?? 0.22
         topHoverOpacity = try c.decodeIfPresent(Double.self, forKey: .topHoverOpacity) ?? 0.08
@@ -263,7 +298,7 @@ struct BannerConfig: Codable, Equatable {
     var qualityLevel: BannerQuality { BannerQuality(rawValue: quality) ?? .high }
     var physicsConfig: BannerPhysics {
         BannerPhysics(quality: qualityLevel, scale: Float(scale), mass: Float(mass),
-                      stiffness: Float(stiffness), damping: Float(damping), pleats: Float(pleats))
+                      stiffness: Float(stiffness), damping: Float(damping), split: split, pleats: Float(pleats))
     }
 }
 
@@ -317,6 +352,10 @@ final class BannerCloth {
     var nodes: [Node] = []
     var joints: [Joint] = []
     var indices: [UInt16] = []
+    private var visibleNodes: Set<Int>?
+    private(set) var topologyVersion = 0
+    private var cutTethers = Set<Int>()
+    private(set) var grabbed: Int?
     private var triangles: [(Int, Int, Int)] = []
     private var force: [V] = []
     private var rest: [V] = []
@@ -380,7 +419,7 @@ final class BannerCloth {
         let scale = rawCols * rawRows > maxNodes ? sqrt(Float(maxNodes) / Float(rawCols * rawRows)) : 1.0
         var c = max(19, Int((Float(rawCols) * scale).rounded()))
         if c % 2 == 0 { c += 1 }
-        columns = c
+        columns = config.split ? c + 1 : c
         rows = max(15, Int((Float(rawRows) * scale).rounded()))
         tail = cutout == .none ? 0 : min(0.21, aspect * 0.28)
 
@@ -395,7 +434,8 @@ final class BannerCloth {
             for i in 0..<columns {
                 let u = Float(i) / Float(columns - 1)
                 let yCloth = v * (aspect - Self.cutoutOffset(u: u, cutout: cutout, tail: tail))
-                let xMeters = (u - 0.5) * metersPerWidth
+                let panelX = config.split ? (u - 0.5) * 0.86 + (i < columns / 2 ? -0.07 : 0.07) : u - 0.5
+                let xMeters = panelX * metersPerWidth
                 let yMeters = yCloth * metersPerWidth
                 let pleat = pleatAmp * (sin(pleatK * xMeters + 0.35) + 0.16 * sin(2 * pleatK * xMeters - 0.7))
                 let p = V(xMeters * Self.rodSpan - 0.14 * pleat, yMeters + 0.04 * pleat, pleat)
@@ -417,6 +457,7 @@ final class BannerCloth {
         for j in 0..<(rows - 1) {
             for i in 0..<(columns - 1) {
                 let k = j * columns + i
+                if config.split && i == columns / 2 - 1 { continue }
                 triangle(k, k + 1, k + columns)
                 triangle(k + 1, k + columns + 1, k + columns)
             }
@@ -441,6 +482,7 @@ final class BannerCloth {
 
         joints.reserveCapacity(nodes.count * 6)
         func link(_ a: Int, _ b: Int, _ alpha: Float) {
+            if config.split && (a % columns < columns / 2) != (b % columns < columns / 2) { return }
             joints.append(Joint(a: a, b: b, length: simd_distance(rest[a], rest[b]), alpha: alpha))
         }
         for j in 0..<rows {
@@ -513,6 +555,75 @@ final class BannerCloth {
         brush = Brush(a: aMeters, segment: segment, velocity: velocity, lengthSquared: distance * distance, remaining: Float(seconds))
     }
 
+    func projected(_ index: Int) -> SIMD2<Float> {
+        let p = nodes[index].position
+        return SIMD2(p.x + 0.14 * p.z, p.y - 0.04 * p.z) / metersPerWidth
+    }
+
+    func nearestPoint(to p: SIMD2<Float>) -> Int? {
+        let radius = max(9 / widthPoints, 0.8 / Float(columns - 1))
+        var bestDistance = radius * radius
+        var best: Int?
+        for index in columns..<nodes.count where !held[index] && (visibleNodes?.contains(index) ?? true) {
+            let distance = simd_distance_squared(p, projected(index))
+            if distance <= bestDistance {
+                bestDistance = distance
+                best = index
+            }
+        }
+        return best
+    }
+
+    func grab(at p: SIMD2<Float>) {
+        releaseGrab()
+        guard let index = nearestPoint(to: p) else { return }
+        grabbed = index
+        nodes[index].inverseMass = 0
+        drag(to: p)
+    }
+
+    func drag(to p: SIMD2<Float>) {
+        guard let index = grabbed else { return }
+        let z = nodes[index].position.z
+        let point = p * metersPerWidth
+        let target = V(point.x - 0.14 * z, point.y + 0.04 * z, z)
+        nodes[index].position = target
+        nodes[index].previous = target
+    }
+
+    func releaseGrab() {
+        guard let index = grabbed else { return }
+        nodes[index].inverseMass = looseMass[index]
+        grabbed = nil
+    }
+
+    func cut(from start: SIMD2<Float>, to end: SIMD2<Float>) {
+        let stroke = end - start
+        guard simd_length_squared(stroke) > 1e-12 else { return }
+        let points = nodes.indices.map(projected)
+        func cross(_ a: SIMD2<Float>, _ b: SIMD2<Float>) -> Float { a.x * b.y - a.y * b.x }
+        func crosses(_ i: Int, _ j: Int) -> Bool {
+            let edge = points[j] - points[i]
+            let denominator = cross(stroke, edge)
+            guard abs(denominator) > 1e-10 else { return false }
+            let delta = points[i] - start
+            let t = cross(delta, edge) / denominator
+            let u = cross(delta, stroke) / denominator
+            return t >= 0 && t <= 1 && u >= 0 && u <= 1
+        }
+        joints.removeAll { crosses($0.a, $0.b) }
+        let before = triangles.count
+        triangles.removeAll { a, b, c in crosses(a,b) || crosses(b,c) || crosses(c,a) }
+        if triangles.count != before {
+            indices = triangles.flatMap { [UInt16($0.0), UInt16($0.1), UInt16($0.2)] }
+            visibleNodes = Set(indices.map(Int.init))
+            topologyVersion += 1
+        }
+        for index in columns..<nodes.count where crosses(index % columns, index) {
+            cutTethers.insert(index)
+        }
+    }
+
     func gust() { gustStart = time }
 
     func advance(seconds: Double) {
@@ -574,7 +685,7 @@ final class BannerCloth {
                 force.withUnsafeBufferPointer { fBuf in
                     held.withUnsafeBufferPointer { hBuf in
                         for k in cols..<nodeCount {
-                            if hBuf[k] { continue }
+                            if hBuf[k] || grabbed == k { continue }
                             let pos = nBuf[k].position, prev = nBuf[k].previous
                             var accel = fBuf[k] * nBuf[k].inverseMass + V(0, 9.81, 0)
                             if let activeBrush {
@@ -632,7 +743,7 @@ final class BannerCloth {
                 rest.withUnsafeBufferPointer { rBuf in
                     held.withUnsafeBufferPointer { hBuf in
                         for k in cols..<nodeCount {
-                            if hBuf[k] { continue }
+                            if hBuf[k] || grabbed == k || cutTethers.contains(k) { continue }
                             let anchor = nBuf[k % cols].position
                             let d = nBuf[k].position - anchor
                             let maxLen = rBuf[k].y * 1.006 + 0.008
@@ -902,7 +1013,8 @@ final class ClothRenderer {
     private let fallbackTexture: MTLTexture?
     private var lastBoardRefresh = Date.distantPast
     let depthState: MTLDepthStencilState
-    let indices: MTLBuffer
+    private var indexBuffer: MTLBuffer?
+    private var uploadedTopology = -1
     private let vertexBuffers: [MTLBuffer]
     private var vertexRing = 0
     let cloth: BannerCloth
@@ -916,8 +1028,8 @@ final class ClothRenderer {
 
     private func loadPrint() {
         if print == .board { mathematics = nil; refreshBoardIfNeeded(force: true); return }
-        if print == .silk || print == .robe { mathematics = nil; return }
-        let url = AppPaths.resource(print.usesPlate ? "banner-plates.png" : "banner-math.png")
+        guard let name = print.textureFile else { mathematics = nil; return }
+        let url = AppPaths.resource(name)
         mathematics = BannerMath.texture(on: gpu, at: url)
     }
 
@@ -937,7 +1049,6 @@ final class ClothRenderer {
         let depth = MTLDepthStencilDescriptor()
         depth.depthCompareFunction = .less; depth.isDepthWriteEnabled = true
         depthState = gpu.makeDepthStencilState(descriptor: depth)!
-        indices = gpu.makeBuffer(bytes: cloth.indices, length: cloth.indices.count * MemoryLayout<UInt16>.stride)!
         let vBytes = cloth.nodes.count * MemoryLayout<BannerCloth.Vertex>.stride
         vertexBuffers = (0..<3).compactMap { _ in gpu.makeBuffer(length: vBytes, options: .storageModeShared) }
         loadPrint()
@@ -962,12 +1073,19 @@ final class ClothRenderer {
         encoder.setFragmentTexture(boardTexture ?? fallbackTexture, index: 1)
         let style: BannerPrint
         if print == .board { style = boardTexture != nil ? .board : .robe }
-        else if mathematics == nil && print != .silk { style = .robe }
+        else if mathematics == nil && print.textureFile != nil { style = .robe }
         else { style = print }
         var fabric = SIMD4<Float>(collarDepth, bodyOpacity, Float(style.rawValue), cloth.tail)
         var extra = SIMD4<Float>(cloth.widthPoints / 330.0, Float(cloth.cutout.shaderId), collarOpacity, 1.0)
         encoder.setFragmentBytes(&fabric, length: MemoryLayout.size(ofValue: fabric), index: 1)
         encoder.setFragmentBytes(&extra, length: MemoryLayout.size(ofValue: extra), index: 2)
+        var grid = SIMD2<Float>(Float(cloth.columns - 1), Float(cloth.rows - 1))
+        encoder.setFragmentBytes(&grid, length: MemoryLayout.size(ofValue: grid), index: 3)
+        if uploadedTopology != cloth.topologyVersion {
+            indexBuffer = cloth.indices.isEmpty ? nil : gpu.makeBuffer(bytes: cloth.indices, length: cloth.indices.count * MemoryLayout<UInt16>.stride)
+            uploadedTopology = cloth.topologyVersion
+        }
+        guard let indices = indexBuffer else { return }
         encoder.drawIndexedPrimitives(type: .triangle, indexCount: cloth.indices.count, indexType: .uint16, indexBuffer: indices, indexBufferOffset: 0)
     }
 }
@@ -1111,6 +1229,7 @@ struct BannerSettingsView: View {
     var onToggleStats: () -> Void
     var onShowBoard: () -> Void
     var onClose: () -> Void
+    var onMend: () -> Void
 
     let dyeSwatches: [BannerDye: Color] = [
         .black: Color(red: 0.14, green: 0.14, blue: 0.16),
@@ -1142,7 +1261,9 @@ struct BannerSettingsView: View {
                 }
             }
             Divider().background(Color.white.opacity(0.14))
-            if m.tab == 0 { nowTab } else if m.tab == 1 { physicsTab } else { rotationTab }
+            ScrollView {
+                if m.tab == 0 { nowTab } else if m.tab == 1 { physicsTab } else { rotationTab }
+            }.frame(maxWidth: .infinity)
         }
         .padding(14).frame(width: 440)
         .background(Color(red: 0.07, green: 0.08, blue: 0.10).opacity(0.96)).cornerRadius(13)
@@ -1155,7 +1276,7 @@ struct BannerSettingsView: View {
                 sectionLabel("PATTERN RIGHT NOW")
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
                     ForEach(BannerPrint.allCases, id: \.rawValue) { p in
-                        let short = ["Robe", "Notebook", "Catenary", "Lorenz", "Doubling", "Brachist.", "Teal Silk", "Live Board"][p.rawValue]
+                        let short = p.shortTitle
                         chip(short, active: m.currentPrint == p, accent: Color(red: 0.72, green: 0.56, blue: 0.28)) {
                             m.currentPrint = p; m.isVisible = true; onSetNow(p, nil, nil, nil, nil, nil)
                         }
@@ -1163,6 +1284,17 @@ struct BannerSettingsView: View {
                 }
             }
             VStack(alignment: .leading, spacing: 4) {
+                sliderRow("Position", value: $m.settings.offset, range: -1...1, fmt: "%+.0f%%", scaleDisplay: 100, rebuild: true)
+                Toggle("Split the middle", isOn: Binding(get: { m.settings.split }, set: {
+                    m.settings.split = $0; onSave(m.settings, true)
+                })).toggleStyle(.checkbox)
+                if m.currentPrint == .mesh {
+                    HStack {
+                        Text("Left-drag a knot. Right-drag to cut.").font(.caption)
+                        Spacer()
+                        Button("Mend net", action: onMend).controlSize(.small)
+                    }.foregroundColor(.white.opacity(0.86))
+                }
                 sectionLabel("COLOUR")
                 HStack(spacing: 4) {
                     ForEach(BannerDye.allCases, id: \.rawValue) { d in
@@ -1329,7 +1461,7 @@ struct BannerSettingsView: View {
                 sectionLabel("PATTERNS IN ROTATION")
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
                     ForEach(BannerPrint.allCases, id: \.rawValue) { p in
-                        let short = ["Robe", "Notebook", "Catenary", "Lorenz", "Doubling", "Brachist.", "Teal Silk", "Live Board"][p.rawValue]
+                        let short = p.shortTitle
                         chip(short, active: m.settings.patterns.contains(p.key), accent: Color(red: 0.26, green: 0.44, blue: 0.62)) {
                             togglePool(&m.settings.patterns, p.key); onSave(m.settings, false)
                         }
@@ -1419,6 +1551,33 @@ final class BannerCanvas: MTKView, MTKViewDelegate {
     func gust() { renderer?.cloth.gust() }
     func refreshBoard() { renderer?.refreshBoardIfNeeded(force: true) }
 
+    private var lastCut: SIMD2<Float>?
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    private func point(_ event: NSEvent) -> SIMD2<Float> {
+        let local = convert(event.locationInWindow, from: nil)
+        return SIMD2(Float(local.x - bounds.midX), Float(isFlipped ? local.y : bounds.maxY - local.y)) / clothWidth
+    }
+    override func mouseDown(with event: NSEvent) {
+        renderer?.cloth.grab(at: point(event))
+        if renderer?.cloth.grabbed != nil { setAccessibilityValue("Holding a mesh knot") }
+    }
+    override func mouseDragged(with event: NSEvent) { renderer?.cloth.drag(to: point(event)) }
+    override func mouseUp(with event: NSEvent) {
+        renderer?.cloth.releaseGrab()
+        setAccessibilityValue("Released mesh knot")
+    }
+    override func rightMouseDown(with event: NSEvent) { lastCut = point(event) }
+    override func rightMouseDragged(with event: NSEvent) {
+        let next = point(event)
+        if let lastCut { renderer?.cloth.cut(from: lastCut, to: next) }
+        lastCut = next
+    }
+    override func rightMouseUp(with event: NSEvent) {
+        rightMouseDragged(with: event)
+        if let cloth = renderer?.cloth { setAccessibilityValue("Mesh revision \(cloth.topologyVersion), \(cloth.triangleCount) triangles") }
+        lastCut = nil
+    }
+
     init?(frame: NSRect, metal: MTLDevice) {
         guard let queue = metal.makeCommandQueue() else { return nil }
         guard let src = try? String(contentsOf: AppPaths.resource("banner.metal"), encoding: .utf8) else {
@@ -1428,6 +1587,7 @@ final class BannerCanvas: MTKView, MTKViewDelegate {
         catch { NSLog("Banner shader error: %@", error.localizedDescription); return nil }
         self.queue = queue
         super.init(frame: frame, device: metal)
+        setAccessibilityElement(true); setAccessibilityRole(.image); setAccessibilityLabel("Banner cloth")
         wantsLayer = true; layer?.isOpaque = false
         clearColor = MTLClearColorMake(0, 0, 0, 0)
         depthStencilPixelFormat = .depth32Float
@@ -1478,6 +1638,11 @@ final class BannerCanvas: MTKView, MTKViewDelegate {
         let now = CACurrentMediaTime()
         let dtFrame = max(1e-4, now - lastFrame)
         let pointer = NSEvent.mouseLocation
+        if let window {
+            let inArea = window.frame.contains(pointer) && (window.screen?.visibleFrame.contains(pointer) ?? false)
+            let hit = print == .mesh && inArea && renderer.cloth.nearestPoint(to: BannerCloth.clothPoint(screen: pointer, frame: window.frame, width: clothWidth)) != nil
+            window.ignoresMouseEvents = !(hit || renderer.cloth.grabbed != nil || lastCut != nil)
+        }
         if let previousPointer, let frame = window?.frame {
             let a = BannerCloth.clothPoint(screen: previousPointer, frame: frame, width: clothWidth)
             let b = BannerCloth.clothPoint(screen: pointer, frame: frame, width: clothWidth)
@@ -1487,7 +1652,7 @@ final class BannerCanvas: MTKView, MTKViewDelegate {
 
         var targetBody = bodyOpacity
         var targetCollar: Float = 1.0
-        if fadeOnHover, let frame = window?.frame {
+        if fadeOnHover && print != .mesh, let frame = window?.frame {
             let dx = abs(Float(pointer.x - frame.midX))
             let yFromTop = Float(frame.maxY - pointer.y)
             if dx <= clothWidth * 0.54 && yFromTop >= -4 && yFromTop <= clothHeight + 18 {
@@ -1536,6 +1701,7 @@ final class ScreenBanner {
     var widths = Rotation<BannerWidth>()
     var cutouts = Rotation<BannerCutout>()
     var timer: Timer?
+    private var appliedConfig: BannerConfig?
 
     init(screen: NSScreen) { self.screen = screen }
 
@@ -1605,7 +1771,11 @@ final class ScreenBanner {
         let f = BannerConfig.load()
         guard window != nil else { return }
         let oldW = widths.current, oldC = cutouts.current
-        _ = prints.keep(f.printPool); _ = dyes.keep(f.dyePool); _ = widths.keep(f.widthPool); _ = cutouts.keep(f.cutoutPool)
+        if appliedConfig?.patterns != f.patterns { _ = prints.keep(f.printPool) }
+        if appliedConfig?.colours != f.colours { _ = dyes.keep(f.dyePool) }
+        if appliedConfig?.widths != f.widths { _ = widths.keep(f.widthPool) }
+        if appliedConfig?.cutouts != f.cutouts { _ = cutouts.keep(f.cutoutPool) }
+        appliedConfig = f
         if rebuild || widths.current != oldW || cutouts.current != oldC { show(lastLength, drop: false, preserve: true) }
         else if let c = window?.contentView as? BannerCanvas {
             c.wind = Float(f.windStrength); c.damping = Float(f.damping)
@@ -1633,6 +1803,7 @@ final class ScreenBanner {
             return
         }
         let f = BannerConfig.load()
+        appliedConfig = f
         let opening = window == nil
         if opening && !preserve {
             prints.advance(f.printPool); dyes.advance(f.dyePool); widths.advance(f.widthPool); cutouts.advance(f.cutoutPool)
@@ -1651,13 +1822,14 @@ final class ScreenBanner {
         let rodW: CGFloat = f.widthFraction.map { max(n.width + 40, min(screen.frame.width, CGFloat($0) * screen.frame.width)) }
             ?? (widths.current ?? .nearFull).rod(notch: n.width, screen: screen.frame.width)
         let clothW = rodW / CGFloat(BannerCloth.rodSpan)
-        let winW = min(screen.frame.width, 2 * clothH + clothW * 1.1)
-        let frame = NSRect(x: centerX - winW / 2, y: top - winH, width: winW, height: winH)
+        let shift = CGFloat(f.offset) * max(0, (screen.frame.width - rodW) / 2)
+        let winW = min(screen.frame.width - 2 * abs(shift), 2 * clothH + clothW * 1.1)
+        let frame = NSRect(x: centerX + shift - winW / 2, y: top - winH, width: winW, height: winH)
 
         if opening {
             guard let dev = MTLCreateSystemDefaultDevice(),
                   let view = BannerCanvas(frame: NSRect(origin: .zero, size: frame.size), metal: dev) else { return }
-            let w = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+            let w = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             w.isOpaque = false; w.backgroundColor = .clear; w.hasShadow = false
             w.ignoresMouseEvents = true; w.level = .statusBar; w.isReleasedWhenClosed = false
             w.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
@@ -1804,7 +1976,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let p = NSPanel(contentRect: NSRect(x: 40, y: 80, width: 318, height: 245),
                             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             p.isOpaque = false; p.backgroundColor = .clear; p.hasShadow = true
-            p.level = .floating; p.isMovableByWindowBackground = true
+            p.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1); p.isMovableByWindowBackground = false
             p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             p.contentView = NSHostingView(rootView: BannerStatsHUDView { [weak p] in p?.orderOut(nil) })
             statsWindow = p
@@ -1847,22 +2019,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             onGust: { [weak self] in self?.sendGust() },
             onToggleStats: { [weak self] in self?.toggleStats() },
             onShowBoard: { [weak self] in self?.showBoard(); store.currentPrint = .board; store.isVisible = true },
-            onClose: { [weak self] in self?.settingsWindow?.orderOut(nil) }
+            onClose: { [weak self] in self?.settingsWindow?.orderOut(nil) },
+            onMend: { [weak b] in guard let b else { return }; b.show(b.lastLength, drop: true, preserve: true) }
         )
         if settingsWindow == nil {
             let p = NSPanel(contentRect: NSRect(x: 100, y: 120, width: 440, height: 540),
                             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             p.isOpaque = false; p.backgroundColor = .clear; p.hasShadow = true
-            p.level = .floating; p.isMovableByWindowBackground = true
+            p.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1); p.isMovableByWindowBackground = false
             p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             settingsWindow = p
         }
         let host = NSHostingView(rootView: view)
-        let fit = host.fittingSize
-        settingsWindow?.setContentSize(NSSize(width: 440, height: max(460, fit.height)))
+        let usable = (b?.screen ?? NSScreen.main)?.visibleFrame.height ?? 760
+        settingsWindow?.setContentSize(NSSize(width: 440, height: min(730, usable - 32)))
         settingsWindow?.contentView = host
         if let s = (b?.screen ?? NSScreen.main)?.visibleFrame {
-            settingsWindow?.setFrameOrigin(NSPoint(x: s.midX - 220, y: s.minY + 64))
+            settingsWindow?.setFrameOrigin(NSPoint(x: s.midX - 220, y: s.midY - (settingsWindow?.frame.height ?? 600) / 2))
         }
         settingsWindow?.orderFrontRegardless()
     }
@@ -1871,7 +2044,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 // MARK: - Headless Metal Cinema Demo Recorder (1920×1080 @ 60fps on Apple Silicon GPU!)
 
 enum DemoRecorder {
-    static func run(outputPath: String, stillsDir: String?) throws {
+    static func run(outputPath: String, stillsDir: String?, interactionDemo: Bool = false) throws {
         guard let gpu = MTLCreateSystemDefaultDevice(),
               let queue = gpu.makeCommandQueue() else {
             throw NSError(domain: "NotchBanner", code: 1, userInfo: [NSLocalizedDescriptionKey: "Metal GPU unavailable"])
@@ -1879,8 +2052,8 @@ enum DemoRecorder {
         let shaderSrc = try String(contentsOf: AppPaths.resource("banner.metal"), encoding: .utf8)
         let library = try gpu.makeLibrary(source: shaderSrc, options: nil)
 
-        let W = 1920, H = 1080, fps = 60
-        let totalSec = 30
+        let W = 1920, H = 1080, fps = interactionDemo ? 30 : 60
+        let totalSec = interactionDemo ? 18 : 30
         let totalFrames = totalSec * fps
         let msaa = gpu.supportsTextureSampleCount(4) ? 4 : 1
 
@@ -1905,7 +2078,7 @@ enum DemoRecorder {
         let depthTex = gpu.makeTexture(descriptor: depthDesc)!
 
         // Pre-render sleek dark macOS desktop backdrop + menu bar + MacBook notch once
-        let bgPixels = renderBackdrop(width: W, height: H)
+        let bgPixels = renderBackdrop(width: W, height: H, plain: interactionDemo)
 
         let outURL = URL(fileURLWithPath: outputPath)
         try? FileManager.default.removeItem(at: outURL)
@@ -1938,7 +2111,7 @@ enum DemoRecorder {
         writer.startWriting()
         writer.startSession(atSourceTime: .zero)
 
-        let clothWidthPt: Float = 1660.0
+        let clothWidthPt: Float = interactionDemo ? 1200 : 1660
         let clothHeightPt: Float = 560.0
         let aspect = clothHeightPt / clothWidthPt
         let viewport = SIMD2<Float>(Float(W), Float(H)) / clothWidthPt
@@ -1979,14 +2152,15 @@ enum DemoRecorder {
             footer: "Apple Silicon Metal   ·   3840 px Live Board   ·   github.com/calmmage/notch-banner"
         )
 
-        var renderer = try makeRenderer(cutout: .none, print: .robe, dye: .garnet, roll: true)
+        var renderer = try makeRenderer(cutout: .none, print: interactionDemo ? .mandala : .robe, dye: .garnet, roll: true)
         var clothBytes = [UInt8](repeating: 0, count: W * H * 4)
         var frameBytes = [UInt8](repeating: 0, count: W * H * 4)
+        var grabStart = SIMD2<Float>.zero
         var currentScene = 0
         var prevCursor: SIMD2<Float>?
         var fpsHistory: [Double] = (0..<48).map { _ in 60.0 }
 
-        print("Recording \(totalSec)s 1080p60 Metal cinema demo on \(gpu.name) → \(outputPath)")
+        print("Recording \(totalSec)s 1080p\(fps) Metal cinema demo on \(gpu.name) → \(outputPath)")
         let startWall = CACurrentMediaTime()
 
         for frameIdx in 0..<totalFrames {
@@ -1996,8 +2170,62 @@ enum DemoRecorder {
             var cursorPt: CGPoint?
             var showHUD = false
 
-            // Scene transitions
-            if t < 6.0 {
+            var cameraShift = 0.0
+            if interactionDemo {
+                if t < 3 {
+                    caption = "Position"
+                    subcaption = "Banner Studio  /  Position"
+                    cameraShift = min(1, max(0, t - 0.8)) * 320
+                } else if t < 6 {
+                    if currentScene != 1 {
+                        var cfg = highCfg
+                        cfg.split = true
+                        renderer = try makeRenderer(cutout: .none, print: .mosaic, dye: .midnight, roll: false, cfg: cfg)
+                        currentScene = 1
+                    }
+                    cameraShift = 320
+                    caption = "Split the middle"
+                    subcaption = "Two panels share the rod. The centre stays open."
+                } else if t < 15 {
+                    if currentScene != 2 {
+                        var cfg = highCfg
+                        cfg.quality = .low
+                        renderer = try makeRenderer(cutout: .none, print: .mesh, dye: .pine, roll: false, cfg: cfg)
+                        currentScene = 2
+                    }
+                    let cloth = renderer.cloth
+                    var point: SIMD2<Float>?
+                    if t < 10.5 {
+                        caption = "Grab a knot"
+                        subcaption = "Mesh  /  Left-drag and hold. Release to let go."
+                        if t >= 6.8 && t < 9.7 {
+                            if cloth.grabbed == nil {
+                                grabStart = cloth.projected((cloth.rows * 2 / 3) * cloth.columns + cloth.columns / 2)
+                                cloth.grab(at: grabStart)
+                            }
+                            let fraction = Float(min(1, (t - 6.8) / 1.5))
+                            point = grabStart + SIMD2(0.23, -0.19) * fraction
+                            cloth.drag(to: point!)
+                        } else { cloth.releaseGrab() }
+                    } else {
+                        caption = "Cut the net"
+                        subcaption = "Right-drag across the strands."
+                        let progress = Float(min(1, (t - 10.5) / 2.9))
+                        let pos = SIMD2<Float>(-0.38 + progress * 0.86, 0.22 + sin(progress * .pi) * 0.045)
+                        if let prevCursor, progress < 1 { cloth.cut(from: prevCursor, to: pos) }
+                        prevCursor = pos
+                        if progress < 1 { point = pos }
+                    }
+                    if let point { cursorPt = CGPoint(x: CGFloat(W) / 2 + CGFloat(point.x * clothWidthPt), y: CGFloat(point.y * clothWidthPt)) }
+                } else {
+                    if currentScene != 3 {
+                        renderer = try makeRenderer(cutout: .none, print: .ink, dye: .garnet, roll: false)
+                        currentScene = 3
+                    }
+                    caption = "Sumi-e ink"
+                    subcaption = "Flag in the menu bar  /  Banner Studio  /  Now (Live)"
+                }
+            } else if t < 6.0 {
                 caption = "Giant Theater Velvet · Unrolling from the Notch"
                 subcaption = "Meters-scale XPBD cloth · Straight hem default · Heavy velvet pleats"
             } else if t < 11.0 {
@@ -2082,6 +2310,7 @@ enum DemoRecorder {
 
             let cb = queue.makeCommandBuffer()!
             let enc = cb.makeRenderCommandEncoder(descriptor: pass)!
+            if cameraShift != 0 { enc.setViewport(MTLViewport(originX: cameraShift, originY: 0, width: Double(W), height: Double(H), znear: 0, zfar: 1)) }
             renderer.draw(enc, viewport: viewport)
             enc.endEncoding()
             cb.commit()
@@ -2159,7 +2388,7 @@ enum DemoRecorder {
 
     static func SectionCompat(_ h: String, _ items: [String]) -> BannerBoard.Section { BannerBoard.Section(heading: h, items: items) }
 
-    static func renderBackdrop(width W: Int, height H: Int) -> [UInt8] {
+    static func renderBackdrop(width W: Int, height H: Int, plain: Bool) -> [UInt8] {
         var bytes = [UInt8](repeating: 0, count: W * H * 4)
         let cs = CGColorSpaceCreateDeviceRGB()
         bytes.withUnsafeMutableBytes { buf in
@@ -2184,6 +2413,7 @@ enum DemoRecorder {
             let orb2 = NSGradient(colors: [NSColor(calibratedRed: 0.12, green: 0.26, blue: 0.34, alpha: 0.22), .clear])!
             orb2.draw(fromCenter: NSPoint(x: 1580, y: 760), radius: 0, toCenter: NSPoint(x: 1580, y: 760), radius: 540, options: [])
 
+            if plain { return }
             // Subtle mock code-editor window below so the banner reads immediately as a real desktop overlay
             let winRect = NSRect(x: 210, y: 470, width: 1500, height: 520)
             let winPath = NSBezierPath(roundedRect: winRect, xRadius: 14, yRadius: 14)
@@ -2317,10 +2547,10 @@ enum DemoRecorder {
 // MARK: - Entry Point & CLI
 
 let args = Array(CommandLine.arguments.dropFirst())
-if let idx = args.firstIndex(of: "--record-demo"), idx + 1 < args.count {
+if let idx = args.firstIndex(where: { ["--record-demo", "--record-interactions"].contains($0) }), idx + 1 < args.count {
     let outPath = args[idx + 1]
     let stills = args.firstIndex(of: "--stills").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
-    do { try DemoRecorder.run(outputPath: outPath, stillsDir: stills); exit(0) }
+    do { try DemoRecorder.run(outputPath: outPath, stillsDir: stills, interactionDemo: args[idx] == "--record-interactions"); exit(0) }
     catch { fputs("Demo recorder failed: \(error)\n", stderr); exit(1) }
 }
 if args.contains("--help") || args.contains("-h") {
