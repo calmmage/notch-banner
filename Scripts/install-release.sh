@@ -23,6 +23,15 @@ changed_app=false
 changed_agent=false
 was_loaded=false
 success=false
+start_agent() {
+    # launchd can acknowledge bootout before the previous service has exited.
+    for delay in 0 1 1 2 3; do
+        sleep "$delay"
+        if launchctl bootstrap "$domain" "$plist" 2>"$stage/bootstrap-error"; then return 0; fi
+    done
+    cat "$stage/bootstrap-error" >&2
+    return 1
+}
 cleanup() {
     if ! "$success"; then
         if "$changed_agent"; then
@@ -34,7 +43,7 @@ cleanup() {
             rm -rf "$target"
             if [[ -d "$stage/previous.app" ]]; then mv "$stage/previous.app" "$target"; fi
         fi
-        if "$was_loaded" && [[ -f "$plist" ]]; then launchctl bootstrap "$domain" "$plist" 2>/dev/null || true; fi
+        if "$was_loaded" && [[ -f "$plist" ]]; then start_agent || true; fi
     fi
     rm -rf "$stage"
     rmdir "$lock"
@@ -59,6 +68,12 @@ plutil -insert Label -string "$label" "$stage/new.plist"
 plutil -insert ProgramArguments -array "$stage/new.plist"
 plutil -insert ProgramArguments.0 -string "$target/Contents/MacOS/NotchBanner" "$stage/new.plist"
 plutil -insert RunAtLoad -bool true "$stage/new.plist"
+if [[ -d "$target" && -f "$plist" ]] && cmp -s "$plist" "$stage/new.plist" && diff -qr "$app" "$target" >/dev/null && launchctl print "$domain/$label" >/dev/null 2>&1; then
+    launchctl kickstart "$domain/$label"
+    success=true
+    echo "NotchBanner $version is already installed. Click the flag in the menu bar."
+    exit 0
+fi
 if [[ -e "$plist" ]]; then cp -p "$plist" "$stage/previous.plist"; fi
 if launchctl print "$domain/$label" >/dev/null 2>&1; then
     was_loaded=true
@@ -69,7 +84,7 @@ changed_app=true
 mv "$app" "$target"
 changed_agent=true
 mv "$stage/new.plist" "$plist"
-launchctl bootstrap "$domain" "$plist"
+start_agent
 launchctl kickstart "$domain/$label"
 success=true
 echo "Installed. Click the flag in the menu bar to open Banner Studio."
