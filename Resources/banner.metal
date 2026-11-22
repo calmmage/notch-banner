@@ -79,13 +79,44 @@ float embroidery(float2 p, float aa) {
     return max(weight,light);
 }
 
+// Fraction of a pixel covered by a periodic yarn, integrating across its footprint.
+float2 yarnCoverage(float2 cell, float2 footprint, float radius) {
+    float2 lo = cell + .5 - footprint * .5;
+    float2 hi = lo + footprint;
+    float width = 2. * radius;
+    float2 a = floor(lo) * width + clamp(fract(lo) - (.5 - radius), 0., width);
+    float2 b = floor(hi) * width + clamp(fract(hi) - (.5 - radius), 0., width);
+    return saturate((b - a) / footprint);
+}
+
+float4 wovenSurface(float2 cell, float3 normal, uint dye, bool openNet) {
+    float2 footprint = max(fwidth(cell), float2(.001));
+    float2 d = abs(fract(cell + .5) - .5);
+    float radius = openNet ? .084 : .054;
+    float2 strand = yarnCoverage(cell, footprint, radius);
+    float coverage = strand.x + (1. - strand.x) * strand.y;
+    float3 n = normalize(normal + float3(0, 0, 1e-6));
+    if (n.z < 0.) n = -n;
+    float light = saturate(dot(n, normalize(float3(-.62,-.38,.8))));
+    const float3 dyes[4] = {float3(.58,.59,.64), float3(.83,.45,.43),
+                            float3(.38,.71,.55), float3(.46,.63,.85)};
+    float ridge = max(0., 1. - pow(min(d.x,d.y)/radius, 2.));
+    float detail = 1. - smoothstep(.12,.65,max(footprint.x,footprint.y));
+    float along = d.x < d.y ? cell.y : cell.x;
+    float twist = sin(along * 31.416) * detail;
+    float crown = strand.x * strand.y;
+    float3 yarn = dyes[dye] * (.40 + .70 * light) * (1. + (.20 * ridge + .09 * twist) * detail);
+    yarn += float3(.24,.21,.15) * (crown + .22 * light * ridge) * detail;
+    return float4(yarn, coverage);
+}
+
 // fabric: (collarDepth, bodyOpacity, style, tail)
 // extra:  (widthScale, cutoutType, boardAspect, 0)
 fragment float4 clothVelvet(Vertex in [[stage_in]],
                             constant float4& s [[buffer(0)]],
                             constant float4& fabric [[buffer(1)]],
                             constant float4& extra [[buffer(2)]],
-                            constant float2& grid [[buffer(3)]],
+                            constant float& repeats [[buffer(3)]],
                             texture2d<float> atlas [[texture(0)]],
                             texture2d<float> boardTex [[texture(1)]]) {
     float collar=fabric.x;
@@ -98,16 +129,14 @@ fragment float4 clothVelvet(Vertex in [[stage_in]],
 
     float y=uv.y;
     float hem=length - cutoutOffset(uv.x, cutout, tail);
+    float2 weaveUV = float2(uv.x - .5, uv.y) * repeats;
     if (style == 8) {
-        float2 cell = float2(uv.x, uv.y / max(hem, .0001)) * grid;
-        float2 nearest = abs(fract(cell + .5) - .5);
-        float2 px = nearest / max(fwidth(cell), float2(.0001));
-        float strand = 1. - smoothstep(.75, 1.7, min(px.x, px.y));
-        float knot = 1. - smoothstep(1.6, 2.8, metal::length(px));
-        float alpha = max(strand, knot) * fabric.y;
-        if (alpha < .01) discard_fragment();
-        float3 yarn = mix(float3(.44, .71, .73), float3(1., .83, .52), knot);
-        return float4(yarn * alpha, alpha);
+        // Bias-cut diamond net. All shading and holes follow the deformed material UV.
+        float2 bias = float2(weaveUV.x + weaveUV.y, weaveUV.x - weaveUV.y) * .70710678;
+        float4 yarn = wovenSurface(bias, in.normal, uint(s.w + .5), true);
+        float alpha = yarn.a * fabric.y;
+        if (alpha < .002) discard_fragment();
+        return float4(yarn.rgb * alpha, alpha);
     }
     float2 physUV=uv * widthScale;          // physical fabric coords: identical crisp velvet grain at EVERY width!
     float aa=max(.00002, max(fwidth(uv.x), fwidth(uv.y)) * .66);
@@ -196,7 +225,7 @@ fragment float4 clothVelvet(Vertex in [[stage_in]],
     float3 color = mix(body, stitchColor, max(crest, border * .74));
 
     // 8K Mathematical notebook & 4K-per-tile plates (aspect-preserving, zero stretching, 16x anisotropic!)
-    if ((style > 0 && style < 6) || style >= 9) {
+    if ((style > 0 && style < 6) || (style >= 9 && style <= 15)) {
         constexpr sampler printSampler(coord::normalized, address::repeat, filter::linear,
                                        mip_filter::linear, max_anisotropy(16));
         float edging = smoothstep(.058, .078, edgePhys) * smoothstep(.052, .078, turnPhys);
@@ -226,6 +255,11 @@ fragment float4 clothVelvet(Vertex in [[stage_in]],
         float ink = atlas.sample(printSampler, printUV, gradient2d(dfdx(printUV), dfdy(printUV))).r;
         float3 whiteThread = mix(float3(.76,.77,.79), float3(1.,.99,.97), direct);
         color = mix(color, whiteThread, min(1., ink * 1.18) * edging * printMask);
+    }
+
+    if (style == 16) {
+        float4 grid = wovenSurface(weaveUV, in.normal, dye, false);
+        color = mix(color, grid.rgb, grid.a);
     }
 
     // Style 7: 4K Live Useful Info Board (Digest / Dashboard / Custom Text woven onto the waving velvet!)

@@ -82,8 +82,8 @@ enum BannerDye: Int, CaseIterable {
 }
 
 enum BannerPrint: Int, CaseIterable {
-    case robe, notebook, catenary, lorenz, bifurcation, brachistochrone, silk, board, mesh, mandala, poincare, ink, guilloche, mosaic, waves, sketch
-    var key: String { ["robe", "notebook", "catenary", "lorenz", "bifurcation", "brachistochrone", "silk", "board", "mesh", "mandala", "poincare", "ink", "guilloche", "mosaic", "waves", "sketch"][rawValue] }
+    case robe, notebook, catenary, lorenz, bifurcation, brachistochrone, silk, board, mesh, mandala, poincare, ink, guilloche, mosaic, waves, sketch, grid
+    var key: String { ["robe", "notebook", "catenary", "lorenz", "bifurcation", "brachistochrone", "silk", "board", "mesh", "mandala", "poincare", "ink", "guilloche", "mosaic", "waves", "sketch", "grid"][rawValue] }
     var title: String {
         switch self {
         case .robe: return "Embroidered robe"
@@ -94,7 +94,8 @@ enum BannerPrint: Int, CaseIterable {
         case .brachistochrone: return "Brachistochrone"
         case .silk: return "Teal and gold silk"
         case .board: return "Live 4K info board"
-        case .mesh: return "Mesh"
+        case .mesh: return "Open net"
+        case .grid: return "Grid cloth"
         case .mandala: return "Mandala"
         case .poincare: return "Poincaré grid"
         case .ink: return "Sumi-e ink"
@@ -118,7 +119,7 @@ enum BannerPrint: Int, CaseIterable {
     }
     var textureFile: String? {
         switch self {
-        case .mesh, .robe, .silk, .board: return nil
+        case .mesh, .grid, .robe, .silk, .board: return nil
         case .mandala, .poincare, .ink, .guilloche: return "banner-art-plates.png"
         case .mosaic: return "banner-mosaic.png"
         case .waves: return "banner-seigaiha.png"
@@ -162,6 +163,33 @@ enum BannerCutout: String, CaseIterable {
     var shaderId: Int { Self.allCases.firstIndex(of: self) ?? 0 }
 }
 
+enum StrandSpacing: String, Codable, CaseIterable {
+    case coarse, medium, fine, dense, gauze
+    var points: Float {
+        switch self {
+        case .coarse: return 28
+        case .medium: return 14
+        case .fine: return 7
+        case .dense: return 3.5
+        case .gauze: return 1.75
+        }
+    }
+}
+enum ClothResolution: String, Codable, CaseIterable {
+    case auto, coarse, medium, fine, ultra
+    func sampling(_ quality: BannerQuality) -> (spacing: Float, limit: Int) {
+        switch self {
+        case .auto: return (quality.targetSpacing, quality.maxNodes)
+        case .coarse: return (22, 2_500)
+        case .medium: return (12, 8_000)
+        case .fine: return (8, 16_000)
+        case .ultra: return (5, 32_000)
+        }
+    }
+}
+enum ClothModel: String, Codable, CaseIterable {
+    case original, tension
+}
 enum BannerQuality: String, CaseIterable {
     case low, med, high, xhigh, max, ultra
     var title: String { ["Low", "Med", "High", "XHigh", "Max", "Ultra"][Self.allCases.firstIndex(of: self)!] }
@@ -225,6 +253,8 @@ enum BannerQuality: String, CaseIterable {
 }
 
 struct BannerPhysics: Equatable {
+    var model: ClothModel = .original
+    var resolution: ClothResolution = .auto
     var quality: BannerQuality = .high
     var scale: Float = 1.0
     var mass: Float = 0.85
@@ -240,6 +270,10 @@ struct BannerConfig: Codable, Equatable {
     var colours = BannerDye.allCases.map(\.key)
     var widths = [BannerWidth.notch, .wide, .half, .nearFull].map(\.rawValue)
     var cutouts = [BannerCutout.none.rawValue]
+    var pinnedWeave: String?
+    var strandSpacing: StrandSpacing = .fine
+    var clothResolution: ClothResolution = .auto
+    var clothModel: ClothModel = .original
     var quality = BannerQuality.high.rawValue
     var windStrength: Double = 1.0
     var scale: Double = 1.0
@@ -258,7 +292,12 @@ struct BannerConfig: Codable, Equatable {
     var topHoverZone: Double = 115
     static let everyChoices: [(String, Double)] = [("Never", 0), ("1 min", 1), ("5 min", 5), ("15 min", 15), ("30 min", 30), ("1 hour", 60)]
 
-    init() {}
+    init() {
+        pinnedWeave = BannerPrint.mesh.key
+        strandSpacing = .dense
+        clothResolution = .fine
+        clothModel = .tension
+    }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         minutes = try c.decodeIfPresent(Double.self, forKey: .minutes) ?? 5
@@ -266,6 +305,10 @@ struct BannerConfig: Codable, Equatable {
         colours = try c.decodeIfPresent([String].self, forKey: .colours) ?? BannerDye.allCases.map(\.key)
         widths = try c.decodeIfPresent([String].self, forKey: .widths) ?? [BannerWidth.notch, .wide, .half, .nearFull].map(\.rawValue)
         cutouts = try c.decodeIfPresent([String].self, forKey: .cutouts) ?? [BannerCutout.none.rawValue]
+        pinnedWeave = try c.decodeIfPresent(String.self, forKey: .pinnedWeave)
+        strandSpacing = StrandSpacing(rawValue: try c.decodeIfPresent(String.self, forKey: .strandSpacing) ?? "") ?? .fine
+        clothResolution = ClothResolution(rawValue: try c.decodeIfPresent(String.self, forKey: .clothResolution) ?? "") ?? .auto
+        clothModel = ClothModel(rawValue: try c.decodeIfPresent(String.self, forKey: .clothModel) ?? "") ?? .original
         quality = try c.decodeIfPresent(String.self, forKey: .quality) ?? BannerQuality.high.rawValue
         windStrength = try c.decodeIfPresent(Double.self, forKey: .windStrength) ?? 1.0
         scale = try c.decodeIfPresent(Double.self, forKey: .scale) ?? 1.0
@@ -291,13 +334,16 @@ struct BannerConfig: Codable, Equatable {
         let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]
         try? e.encode(self).write(to: AppPaths.configURL, options: .atomic)
     }
-    var printPool: [BannerPrint] { let p = BannerPrint.allCases.filter { patterns.contains($0.key) }; return p.isEmpty ? [.robe] : p }
+    var printPool: [BannerPrint] {
+        if pinnedWeave == BannerPrint.mesh.key { return [.mesh] }
+        if pinnedWeave == BannerPrint.grid.key { return [.grid] }
+        let p = BannerPrint.allCases.filter { patterns.contains($0.key) }; return p.isEmpty ? [.robe] : p }
     var dyePool: [BannerDye] { let p = BannerDye.allCases.filter { colours.contains($0.key) }; return p.isEmpty ? [.garnet] : p }
     var widthPool: [BannerWidth] { let p = BannerWidth.allCases.filter { widths.contains($0.rawValue) }; return p.isEmpty ? [.nearFull] : p }
     var cutoutPool: [BannerCutout] { let p = BannerCutout.allCases.filter { cutouts.contains($0.rawValue) }; return p.isEmpty ? [.none] : p }
     var qualityLevel: BannerQuality { BannerQuality(rawValue: quality) ?? .high }
     var physicsConfig: BannerPhysics {
-        BannerPhysics(quality: qualityLevel, scale: Float(scale), mass: Float(mass),
+        BannerPhysics(model: clothModel, resolution: clothResolution, quality: qualityLevel, scale: Float(scale), mass: Float(mass),
                       stiffness: Float(stiffness), damping: Float(damping), split: split, pleats: Float(pleats))
     }
 }
@@ -333,6 +379,7 @@ final class BannerCloth {
     struct Joint {
         let a, b: Int
         let length, alpha: Float
+        var tensionOnly = false
         var lambda: Float = 0
     }
     struct Vertex {
@@ -412,10 +459,11 @@ final class BannerCloth {
         self.iterations = config.quality.iterations
         self.dt = Self.outerDt / Float(self.substeps)
 
-        let targetSpacing = config.quality.targetSpacing
+        let sampling = config.resolution.sampling(config.quality)
+        let targetSpacing = sampling.spacing
         let rawCols = max(21, Int((self.widthPoints / targetSpacing).rounded()) + 1)
         let rawRows = max(17, Int((heightPoints / targetSpacing).rounded()) + 1)
-        let maxNodes = config.quality.maxNodes
+        let maxNodes = sampling.limit
         let scale = rawCols * rawRows > maxNodes ? sqrt(Float(maxNodes) / Float(rawCols * rawRows)) : 1.0
         var c = max(19, Int((Float(rawCols) * scale).rounded()))
         if c % 2 == 0 { c += 1 }
@@ -445,7 +493,8 @@ final class BannerCloth {
             }
         }
 
-        let arealDensity = max(0.2, min(2.5, config.mass))
+        let net = config.model == .tension
+        let arealDensity = max(0.2, min(2.5, config.mass)) * (net ? 0.52 : 1)
         var mass = [Float](repeating: 0, count: nodes.count)
         triangles.reserveCapacity(2 * (columns - 1) * (rows - 1))
         indices.reserveCapacity(6 * (columns - 1) * (rows - 1))
@@ -476,23 +525,24 @@ final class BannerCloth {
         }
         let avgW2 = 2 * (sumInvMass / Float(max(freeCount, 1)))
         let stiff = max(0.25, min(3.0, config.stiffness))
-        let shearAlpha: Float = (0.08 / stiff) * avgW2
+        let shearAlpha: Float = ((net ? 0.015 : 0.08) / stiff) * avgW2
+        let transverseAlpha: Float = net ? (0.7 / stiff) * avgW2 : 0
         let bendHAlpha: Float = (32.0 / stiff) * avgW2
         let bendVAlpha: Float = (18.0 / stiff) * avgW2
 
         joints.reserveCapacity(nodes.count * 6)
-        func link(_ a: Int, _ b: Int, _ alpha: Float) {
+        func link(_ a: Int, _ b: Int, _ alpha: Float, cord: Bool = false) {
             if config.split && (a % columns < columns / 2) != (b % columns < columns / 2) { return }
-            joints.append(Joint(a: a, b: b, length: simd_distance(rest[a], rest[b]), alpha: alpha))
+            joints.append(Joint(a: a, b: b, length: simd_distance(rest[a], rest[b]), alpha: alpha, tensionOnly: cord))
         }
         for j in 0..<rows {
             for i in 0..<columns {
                 let k = j * columns + i
-                if i + 1 < columns { link(k, k + 1, 0) }
-                if j + 1 < rows { link(k, k + columns, 0) }
+                if i + 1 < columns { link(k, k + 1, transverseAlpha) }
+                if j + 1 < rows { link(k, k + columns, transverseAlpha) }
                 if i + 1 < columns && j + 1 < rows {
-                    link(k, k + columns + 1, shearAlpha)
-                    link(k + 1, k + columns, shearAlpha)
+                    link(k, k + columns + 1, shearAlpha, cord: net)
+                    link(k + 1, k + columns, shearAlpha, cord: net)
                 }
                 if i + 2 < columns { link(k, k + 2, bendHAlpha) }
                 if j + 2 < rows { link(k, k + 2 * columns, bendVAlpha) }
@@ -646,6 +696,7 @@ final class BannerCloth {
         let gain = wind <= 0.001 ? 0 : Self.breezeGain(at: time) * (wind <= 1.0 ? wind : (1.0 + (wind - 1.0) * 0.58))
         liveWindGain = gain
 
+        let windArea: Float = config.model == .tension ? 0.24 : 1
         let tNow = time, gStart = gustStart, halfW = metersPerWidth * 0.5
         force.withUnsafeMutableBufferPointer { fBuf in
             for k in 0..<fBuf.count { fBuf[k] = .zero }
@@ -671,7 +722,7 @@ final class BannerCloth {
                         let rel = air - velocity
                         let vn = simd_dot(rel, n)
                         let pressure = n * (vn * abs(vn) * 0.90) + (rel - n * vn) * min(simd_length(rel) * 0.11, 2.2)
-                        let load = pressure * (area / 3.0)
+                        let load = pressure * (area * windArea / 3.0)
                         fBuf[a] += load; fBuf[b] += load; fBuf[c] += load
                     }
                 }
@@ -732,7 +783,9 @@ final class BannerCloth {
                             if distSq < 1e-16 { continue }
                             let distance = sqrt(distSq)
                             let alpha = jBuf[k].alpha
-                            let dl = (-(distance - jBuf[k].length) - alpha * jBuf[k].lambda) / (wSum + alpha)
+                            var dl = (-(distance - jBuf[k].length) - alpha * jBuf[k].lambda) / (wSum + alpha)
+                            // A cord may pull its endpoints together but cannot push them apart.
+                            if jBuf[k].tensionOnly { dl = min(dl, -jBuf[k].lambda) }
                             jBuf[k].lambda += dl
                             let correction = d * (dl / distance)
                             nBuf[a].position -= correction * wa
@@ -1004,6 +1057,7 @@ final class ClothRenderer {
     let pipeline: MTLRenderPipelineState
     let sampleCount: Int
     var dye = BannerDye.garnet
+    var strandSpacing: StrandSpacing = .fine
     var collarDepth: Float = 0.03
     var bodyOpacity: Float = 1
     var collarOpacity: Float = 1
@@ -1079,7 +1133,7 @@ final class ClothRenderer {
         var extra = SIMD4<Float>(cloth.widthPoints / 330.0, Float(cloth.cutout.shaderId), collarOpacity, 1.0)
         encoder.setFragmentBytes(&fabric, length: MemoryLayout.size(ofValue: fabric), index: 1)
         encoder.setFragmentBytes(&extra, length: MemoryLayout.size(ofValue: extra), index: 2)
-        var grid = SIMD2<Float>(Float(cloth.columns - 1), Float(cloth.rows - 1))
+        var grid = cloth.widthPoints / strandSpacing.points
         encoder.setFragmentBytes(&grid, length: MemoryLayout.size(ofValue: grid), index: 3)
         if uploadedTopology != cloth.topologyVersion {
             indexBuffer = cloth.indices.isEmpty ? nil : gpu.makeBuffer(bytes: cloth.indices, length: cloth.indices.count * MemoryLayout<UInt16>.stride)
@@ -1273,12 +1327,31 @@ struct BannerSettingsView: View {
     var nowTab: some View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
-                sectionLabel("PATTERN RIGHT NOW")
+                sectionLabel("SURFACE")
+                HStack {
+                    ForEach([BannerPrint.mesh, .grid], id: \.rawValue) { p in
+                        chip(p.title, active: m.currentPrint == p, accent: Color(red: 0.26, green: 0.44, blue: 0.62)) {
+                            m.settings.pinnedWeave = p.key; m.currentPrint = p; m.isVisible = true
+                            onSetNow(p, nil, nil, nil, nil, nil)
+                        }
+                    }
+                }
+                if m.currentPrint == .mesh || m.currentPrint == .grid {
+                    sectionLabel("STRAND SPACING")
+                    HStack {
+                        ForEach(StrandSpacing.allCases, id: \.self) { spacing in
+                            chip(String(format: "%g pt", spacing.points), active: m.settings.strandSpacing == spacing, accent: .teal) {
+                                m.settings.strandSpacing = spacing; onSave(m.settings, false)
+                            }
+                        }
+                    }
+                }
+                sectionLabel("FABRIC PRINTS")
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
-                    ForEach(BannerPrint.allCases, id: \.rawValue) { p in
+                    ForEach(BannerPrint.allCases.filter { $0 != .mesh && $0 != .grid }, id: \.rawValue) { p in
                         let short = p.shortTitle
                         chip(short, active: m.currentPrint == p, accent: Color(red: 0.72, green: 0.56, blue: 0.28)) {
-                            m.currentPrint = p; m.isVisible = true; onSetNow(p, nil, nil, nil, nil, nil)
+                            m.settings.pinnedWeave = nil; m.currentPrint = p; m.isVisible = true; onSetNow(p, nil, nil, nil, nil, nil)
                         }
                     }
                 }
@@ -1394,6 +1467,22 @@ struct BannerSettingsView: View {
 
     var physicsTab: some View {
         VStack(alignment: .leading, spacing: 9) {
+            sectionLabel("PHYSICS MODEL")
+            HStack {
+                ForEach(ClothModel.allCases, id: \.self) { model in
+                    chip(model == .original ? "Original velvet" : "Tension net", active: m.settings.clothModel == model, accent: .teal) {
+                        m.settings.clothModel = model; onSave(m.settings, true)
+                    }
+                }
+            }
+            sectionLabel("SIMULATED MESH RESOLUTION")
+            HStack {
+                ForEach(ClothResolution.allCases, id: \.self) { resolution in
+                    chip(resolution.rawValue.capitalized, active: m.settings.clothResolution == resolution, accent: .teal) {
+                        m.settings.clothResolution = resolution; onSave(m.settings, true)
+                    }
+                }
+            }
             VStack(alignment: .leading, spacing: 4) {
                 sectionLabel("QUALITY TIER")
                 HStack(spacing: 4) {
@@ -1427,6 +1516,7 @@ struct BannerSettingsView: View {
             HStack {
                 Spacer()
                 Button("Reset Theater Velvet Defaults") {
+                    m.settings.clothModel = .original; m.settings.clothResolution = .auto
                     m.settings.quality = BannerQuality.high.rawValue
                     m.settings.windStrength = 1.0; m.settings.scale = 1.0; m.settings.mass = 0.85
                     m.settings.stiffness = 1.0; m.settings.damping = 0.65; m.settings.pleats = 1.0
@@ -1551,6 +1641,7 @@ final class BannerCanvas: MTKView, MTKViewDelegate {
     func gust() { renderer?.cloth.gust() }
     func refreshBoard() { renderer?.refreshBoardIfNeeded(force: true) }
 
+    var strandSpacing: StrandSpacing = .fine { didSet { renderer?.strandSpacing = strandSpacing } }
     private var lastCut: SIMD2<Float>?
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     private func point(_ event: NSEvent) -> SIMD2<Float> {
@@ -1623,6 +1714,7 @@ final class BannerCanvas: MTKView, MTKViewDelegate {
                 if drop { renderer?.cloth.beginRoll() }
             } catch { NSLog("Renderer init error: %@", error.localizedDescription) }
         }
+        renderer?.strandSpacing = strandSpacing
         renderer?.cloth.wind = wind; renderer?.cloth.damping = damping
         renderer?.dye = dye; renderer?.print = print
         smoothBodyOpacity = bodyOpacity; smoothCollarOpacity = 1.0
@@ -1732,12 +1824,16 @@ final class ScreenBanner {
                 widthFraction wf: Double?, heightFraction hf: Double?, opacity op: Double?) {
         var f = BannerConfig.load()
         var needsLayout = false, needsRebuild = false
-        if let p { _ = prints.advance([p]) }
+        if let p {
+            f.pinnedWeave = p == .mesh || p == .grid ? p.key : nil
+            _ = prints.advance([p])
+        }
         if let d { _ = dyes.advance([d]) }
         if let c { _ = cutouts.advance([c]); needsRebuild = true }
         if let wf { f.widthFraction = wf; needsLayout = true }
         if let hf { f.heightFraction = hf; needsLayout = true }
         if let op { f.opacity = op }
+        appliedConfig = f
         f.save()
         if length == .hidden { show(lastLength == .hidden ? .short : lastLength, drop: true, preserve: true); return }
         if needsLayout || needsRebuild { show(lastLength == .hidden ? .short : lastLength, drop: false, preserve: true) }
@@ -1771,14 +1867,14 @@ final class ScreenBanner {
         let f = BannerConfig.load()
         guard window != nil else { return }
         let oldW = widths.current, oldC = cutouts.current
-        if appliedConfig?.patterns != f.patterns { _ = prints.keep(f.printPool) }
+        if appliedConfig?.patterns != f.patterns || appliedConfig?.pinnedWeave != f.pinnedWeave { _ = prints.keep(f.printPool) }
         if appliedConfig?.colours != f.colours { _ = dyes.keep(f.dyePool) }
         if appliedConfig?.widths != f.widths { _ = widths.keep(f.widthPool) }
         if appliedConfig?.cutouts != f.cutouts { _ = cutouts.keep(f.cutoutPool) }
         appliedConfig = f
         if rebuild || widths.current != oldW || cutouts.current != oldC { show(lastLength, drop: false, preserve: true) }
         else if let c = window?.contentView as? BannerCanvas {
-            c.wind = Float(f.windStrength); c.damping = Float(f.damping)
+            c.strandSpacing = f.strandSpacing; c.wind = Float(f.windStrength); c.damping = Float(f.damping)
             c.bodyOpacity = Float(f.opacity); c.fadeOnHover = f.fadeOnHover
             c.hoverOpacity = Float(f.hoverOpacity); c.topHoverOpacity = Float(f.topHoverOpacity); c.topHoverZone = Float(f.topHoverZone)
             c.print = prints.current!; c.dye = dyes.current!
@@ -1838,7 +1934,7 @@ final class ScreenBanner {
         }
         window?.setFrame(frame, display: false)
         if let canvas = window?.contentView as? BannerCanvas {
-            canvas.wind = Float(f.windStrength); canvas.damping = Float(f.damping)
+            canvas.strandSpacing = f.strandSpacing; canvas.wind = Float(f.windStrength); canvas.damping = Float(f.damping)
             canvas.dye = dyes.current ?? .garnet; canvas.print = prints.current ?? .robe
             canvas.bodyOpacity = Float(f.opacity); canvas.fadeOnHover = f.fadeOnHover
             canvas.hoverOpacity = Float(f.hoverOpacity); canvas.topHoverOpacity = Float(f.topHoverOpacity); canvas.topHoverZone = Float(f.topHoverZone)
@@ -2044,7 +2140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 // MARK: - Headless Metal Cinema Demo Recorder (1920×1080 @ 60fps on Apple Silicon GPU!)
 
 enum DemoRecorder {
-    static func run(outputPath: String, stillsDir: String?, interactionDemo: Bool = false) throws {
+    static func run(outputPath: String, stillsDir: String?, interactionDemo: Bool = false, weaveDemo: Bool = false) throws {
         guard let gpu = MTLCreateSystemDefaultDevice(),
               let queue = gpu.makeCommandQueue() else {
             throw NSError(domain: "NotchBanner", code: 1, userInfo: [NSLocalizedDescriptionKey: "Metal GPU unavailable"])
@@ -2052,8 +2148,8 @@ enum DemoRecorder {
         let shaderSrc = try String(contentsOf: AppPaths.resource("banner.metal"), encoding: .utf8)
         let library = try gpu.makeLibrary(source: shaderSrc, options: nil)
 
-        let W = 1920, H = 1080, fps = interactionDemo ? 30 : 60
-        let totalSec = interactionDemo ? 18 : 30
+        let W = 1920, H = 1080, fps = (interactionDemo || weaveDemo) ? 30 : 60
+        let totalSec = weaveDemo ? 20 : (interactionDemo ? 18 : 30)
         let totalFrames = totalSec * fps
         let msaa = gpu.supportsTextureSampleCount(4) ? 4 : 1
 
@@ -2078,7 +2174,7 @@ enum DemoRecorder {
         let depthTex = gpu.makeTexture(descriptor: depthDesc)!
 
         // Pre-render sleek dark macOS desktop backdrop + menu bar + MacBook notch once
-        let bgPixels = renderBackdrop(width: W, height: H, plain: interactionDemo)
+        let bgPixels = renderBackdrop(width: W, height: H, plain: interactionDemo || weaveDemo)
 
         let outURL = URL(fileURLWithPath: outputPath)
         try? FileManager.default.removeItem(at: outURL)
@@ -2156,7 +2252,7 @@ enum DemoRecorder {
         var clothBytes = [UInt8](repeating: 0, count: W * H * 4)
         var frameBytes = [UInt8](repeating: 0, count: W * H * 4)
         var grabStart = SIMD2<Float>.zero
-        var currentScene = 0
+        var currentScene = weaveDemo ? -1 : 0
         var prevCursor: SIMD2<Float>?
         var fpsHistory: [Double] = (0..<48).map { _ in 60.0 }
 
@@ -2171,7 +2267,40 @@ enum DemoRecorder {
             var showHUD = false
 
             var cameraShift = 0.0
-            if interactionDemo {
+            if weaveDemo {
+                let scene = min(4, Int(t / 4))
+                let phases = [StrandSpacing.coarse, .fine, .dense, .dense, .fine]
+                let meshes = [ClothResolution.medium, .medium, .fine, .fine, .fine]
+                if currentScene != scene {
+                    var cfg = highCfg
+                    cfg.model = scene < 2 ? .original : .tension
+                    cfg.resolution = meshes[scene]
+                    renderer = try makeRenderer(cutout: .none, print: scene == 4 ? .grid : .mesh, dye: .midnight, roll: false, cfg: cfg)
+                    renderer.strandSpacing = phases[scene]
+                    currentScene = scene
+                    prevCursor = nil
+                    Swift.print("Scene \(scene): \(renderer.cloth.columns) × \(renderer.cloth.rows) nodes, \(renderer.cloth.triangleCount) faces")
+                }
+                caption = ["Open net · coarse strands", "Same geometry · finer strands", "Tension net · grab and hold", "Cutting the dense net", "Grid cloth · woven surface"][scene]
+                subcaption = "\(phases[scene].points) pt yarn spacing  /  \(renderer.cloth.columns) × \(renderer.cloth.rows) nodes  /  \(scene < 2 ? "original velvet physics" : "tension net physics")"
+                let phase = Float(t.truncatingRemainder(dividingBy: 4))
+                let cloth = renderer.cloth
+                var cursor: SIMD2<Float>?
+                if scene == 2, phase > 0.3, phase < 3.3 {
+                    if cloth.grabbed == nil {
+                        grabStart = cloth.projected((cloth.rows * 2 / 3) * cloth.columns + cloth.columns / 2)
+                        cloth.grab(at: grabStart)
+                    }
+                    cursor = grabStart + SIMD2(0.15, -0.105) * min(1, (phase - 0.3) / 1.5)
+                    if let cursor { cloth.drag(to: cursor) }
+                } else if scene == 3, phase > 0.3, phase < 3.5 {
+                    let u = min(1, (phase - 0.3) / 2.5)
+                    cursor = SIMD2(-0.45 + 0.78 * u, 0.15 + 0.035 * sin(u * .pi))
+                    if let prevCursor, let cursor { cloth.cut(from: prevCursor, to: cursor) }
+                    prevCursor = cursor
+                } else { cloth.releaseGrab() }
+                if let cursor { cursorPt = CGPoint(x: CGFloat(W)/2 + CGFloat(cursor.x * clothWidthPt), y: CGFloat(cursor.y * clothWidthPt)) }
+            } else if interactionDemo {
                 if t < 3 {
                     caption = "Position"
                     subcaption = "Banner Studio  /  Position"
@@ -2547,10 +2676,10 @@ enum DemoRecorder {
 // MARK: - Entry Point & CLI
 
 let args = Array(CommandLine.arguments.dropFirst())
-if let idx = args.firstIndex(where: { ["--record-demo", "--record-interactions"].contains($0) }), idx + 1 < args.count {
+if let idx = args.firstIndex(where: { ["--record-demo", "--record-interactions", "--record-weaves"].contains($0) }), idx + 1 < args.count {
     let outPath = args[idx + 1]
     let stills = args.firstIndex(of: "--stills").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
-    do { try DemoRecorder.run(outputPath: outPath, stillsDir: stills, interactionDemo: args[idx] == "--record-interactions"); exit(0) }
+    do { try DemoRecorder.run(outputPath: outPath, stillsDir: stills, interactionDemo: args[idx] == "--record-interactions", weaveDemo: args[idx] == "--record-weaves"); exit(0) }
     catch { fputs("Demo recorder failed: \(error)\n", stderr); exit(1) }
 }
 if args.contains("--help") || args.contains("-h") {

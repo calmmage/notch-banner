@@ -20,10 +20,14 @@
 Paste this command into Terminal. It downloads the universal macOS 13+ app, verifies the release archive, and starts the flag in your menu bar. It installs in your Applications folder and starts at login. A Metal-capable Mac is required.
 
 ```bash
-curl -fsSL https://github.com/calmmage/notch-banner/releases/download/v1.2.0/setup-mac.sh | /bin/bash
+curl -fsSL https://github.com/calmmage/notch-banner/releases/download/v1.3.0/setup-mac.sh | /bin/bash
 ```
 
-Click the flag to open **Banner Studio → Now (Live)**. **Position** moves the curtain left or right within the space beside it. **Split the middle** opens a gap between two independent panels. Choose **Mesh** to grab a knot with the left mouse button or cut strands with a right-button drag. On a trackpad, hold a secondary click while dragging. **Mend net** restores the strands. Other prints let clicks pass through to your desktop.
+In **Banner Studio → Now (Live)**, choose **Open net** for a transparent diamond weave you can grab, cut and mend, or **Grid cloth** for a woven grid on opaque fabric. Choose strand spacing from **28 pt** down to **1.75 pt**. Selecting a fabric print returns to normal pattern rotation.
+
+In **Physics & Quality**, switch between **Original velvet** and **Tension net**. The net uses tension-only diagonal cords, lower mass and reduced wind pressure. **Simulated mesh resolution** controls folds and the fineness of cuts independently of strand spacing. Auto follows the quality tier. Coarse, Medium, Fine and Ultra target 22, 12, 8 and 5 pt between simulated nodes, with size-dependent limits. New installations start in Open net with 3.5 pt strands, Fine geometry and Tension net physics. Existing saved settings continue with the original solver until changed. [Watch the materials and physics demo](https://github.com/calmmage/notch-banner/releases/download/v1.3.0/weaves.mp4).
+
+Click the flag to open **Banner Studio → Now (Live)**. **Position** moves the curtain left or right within the space beside it. **Split the middle** opens a gap between two independent panels. Choose **Open net** to grab a knot with the left mouse button or cut strands with a right-button drag. On a trackpad, hold a secondary click while dragging. **Mend net** restores the strands. Other prints let clicks pass through to your desktop.
 
 New prints include mandala, Poincaré grid, sumi-e ink, guilloché, mosaic, seigaiha waves, and botanical sketch. [Watch the interaction demo](https://github.com/calmmage/notch-banner/releases/download/v1.2.0/interactions.mp4).
 

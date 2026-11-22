@@ -1,7 +1,7 @@
 #!/bin/bash
 # Install this release for the current macOS user and start the menu-bar app at login.
 set -euo pipefail
-version=1.2.0
+version=1.3.0
 base="https://github.com/calmmage/notch-banner/releases/download/v$version"
 archive="NotchBanner-v$version-macOS.zip"
 apps="$HOME/Applications"
