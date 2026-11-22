@@ -1,9 +1,13 @@
 #!/bin/bash
 # Install this release for the current macOS user and start the menu-bar app at login.
 set -euo pipefail
-version=1.3.0
+version=1.4.0
 base="https://github.com/calmmage/notch-banner/releases/download/v$version"
 archive="NotchBanner-v$version-macOS.zip"
+case "${1:-}" in
+    ""|--edge-curtains) ;;
+    *) echo "Usage: setup-mac.sh [--edge-curtains]" >&2; exit 2 ;;
+esac
 apps="$HOME/Applications"
 label=com.calmmage.notch-banner
 agent_dir="$HOME/Library/LaunchAgents"
@@ -67,6 +71,9 @@ plutil -create xml1 "$stage/new.plist"
 plutil -insert Label -string "$label" "$stage/new.plist"
 plutil -insert ProgramArguments -array "$stage/new.plist"
 plutil -insert ProgramArguments.0 -string "$target/Contents/MacOS/NotchBanner" "$stage/new.plist"
+if [[ "${1:-}" == "--edge-curtains" ]]; then
+    plutil -insert ProgramArguments.1 -string "--edge-curtains" "$stage/new.plist"
+fi
 plutil -insert RunAtLoad -bool true "$stage/new.plist"
 if [[ -d "$target" && -f "$plist" ]] && cmp -s "$plist" "$stage/new.plist" && diff -qr "$app" "$target" >/dev/null && launchctl print "$domain/$label" >/dev/null 2>&1; then
     launchctl kickstart "$domain/$label"

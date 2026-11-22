@@ -8,7 +8,7 @@ vertex Vertex clothVertex(uint id [[vertex_id]], const device MaterialVertex *me
     MaterialVertex v=mesh[id];
     // Orthographic camera with a slight oblique view so out-of-plane billows are visible.
     float2 projected=float2(v.position.x+.14*v.position.z,v.position.y-.04*v.position.z);
-    return {float4(2.*projected.x/scene.x,1.-2.*projected.y/scene.y,
+    return {float4(2.*(projected.x+scene.z)/scene.x,1.-2.*projected.y/scene.y,
                    clamp(.50-v.position.z*.045,0.01,.99),1),v.uv,v.normal.xyz,projected.y};
 }
 

@@ -52,8 +52,8 @@ if [[ "${1:-}" == "--app" ]]; then
   <key>CFBundleName</key><string>NotchBanner</string>
   <key>CFBundleDisplayName</key><string>Notch Banner</string>
   <key>CFBundleIdentifier</key><string>com.calmmage.notch-banner</string>
-  <key>CFBundleVersion</key><string>1.3.0</string>
-  <key>CFBundleShortVersionString</key><string>1.3.0</string>
+  <key>CFBundleVersion</key><string>1.4.0</string>
+  <key>CFBundleShortVersionString</key><string>1.4.0</string>
   <key>CFBundleExecutable</key><string>NotchBanner</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>

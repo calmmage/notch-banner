@@ -57,6 +57,12 @@ func batteryInfo() -> (Int, Bool)? {
 
 // MARK: - Enums & Settings
 
+enum CurtainPlacement: String, Codable, CaseIterable {
+    case center, left, right, both
+}
+
+enum CurtainSlot { case center, left, right }
+
 enum BannerLength: Int, CaseIterable {
     case hidden, ultraShort, short, half, full
     var title: String { ["Hide", "Ultra short", "Short", "Half height", "Full height"][rawValue] }
@@ -253,6 +259,7 @@ enum BannerQuality: String, CaseIterable {
 }
 
 struct BannerPhysics: Equatable {
+    var curtainSlot: CurtainSlot = .center
     var model: ClothModel = .original
     var resolution: ClothResolution = .auto
     var quality: BannerQuality = .high
@@ -284,6 +291,9 @@ struct BannerConfig: Codable, Equatable {
     var opacity: Double = 1.0
     var widthFraction: Double? = nil
     var heightFraction: Double? = nil
+    var placement: CurtainPlacement?
+    var curtainWidth: Double = 0.18
+    var layout: CurtainPlacement { placement ?? .center }
     var offset: Double = 0
     var split = false
     var fadeOnHover: Bool = true
@@ -319,6 +329,8 @@ struct BannerConfig: Codable, Equatable {
         opacity = try c.decodeIfPresent(Double.self, forKey: .opacity) ?? 1.0
         widthFraction = try c.decodeIfPresent(Double.self, forKey: .widthFraction)
         heightFraction = try c.decodeIfPresent(Double.self, forKey: .heightFraction)
+        placement = try c.decodeIfPresent(CurtainPlacement.self, forKey: .placement)
+        curtainWidth = min(0.35, max(0.08, try c.decodeIfPresent(Double.self, forKey: .curtainWidth) ?? 0.18))
         offset = min(1, max(-1, try c.decodeIfPresent(Double.self, forKey: .offset) ?? 0))
         split = try c.decodeIfPresent(Bool.self, forKey: .split) ?? false
         fadeOnHover = try c.decodeIfPresent(Bool.self, forKey: .fadeOnHover) ?? true
@@ -327,8 +339,22 @@ struct BannerConfig: Codable, Equatable {
         topHoverZone = try c.decodeIfPresent(Double.self, forKey: .topHoverZone) ?? 115
     }
     static func load() -> BannerConfig {
-        if let d = try? Data(contentsOf: AppPaths.configURL), let f = try? JSONDecoder().decode(BannerConfig.self, from: d) { return f }
-        let f = BannerConfig(); f.save(); return f
+        let saved = (try? Data(contentsOf: AppPaths.configURL)).flatMap { try? JSONDecoder().decode(Self.self, from: $0) }
+        var config = saved ?? BannerConfig()
+        // A saved choice always wins, including an explicit return to Center.
+        if CommandLine.arguments.contains("--edge-curtains") && config.placement == nil {
+            config.placement = .both
+            config.heightFraction = 1
+            if saved == nil {
+                config.pinnedWeave = nil
+                config.patterns = [BannerPrint.robe.key]
+                config.colours = [BannerDye.garnet.key]
+                config.clothModel = .original
+                config.clothResolution = .auto
+            }
+            config.save()
+        } else if saved == nil { config.save() }
+        return config
     }
     func save() {
         let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -344,7 +370,7 @@ struct BannerConfig: Codable, Equatable {
     var qualityLevel: BannerQuality { BannerQuality(rawValue: quality) ?? .high }
     var physicsConfig: BannerPhysics {
         BannerPhysics(model: clothModel, resolution: clothResolution, quality: qualityLevel, scale: Float(scale), mass: Float(mass),
-                      stiffness: Float(stiffness), damping: Float(damping), split: split, pleats: Float(pleats))
+                      stiffness: Float(stiffness), damping: Float(damping), split: layout == .center && split, pleats: Float(pleats))
     }
 }
 
@@ -807,6 +833,17 @@ final class BannerCloth {
                         }
                     }
                 }
+                // The outside hem slides vertically along the display edge. Released pieces can fall away.
+                if config.curtainSlot != .center {
+                    let outer = config.curtainSlot == .left ? 0 : cols - 1
+                    let top = nBuf[outer].position
+                    let seamX = top.x + 0.14 * top.z
+                    for k in stride(from: outer + cols, to: nodeCount, by: cols)
+                        where !held[k] && grabbed != k && !cutTethers.contains(k) {
+                        nBuf[k].position.x = seamX - 0.14 * nBuf[k].position.z
+                        nBuf[k].previous.x = seamX - 0.14 * nBuf[k].previous.z
+                    }
+                }
             }
         }
     }
@@ -1108,7 +1145,7 @@ final class ClothRenderer {
         loadPrint()
     }
 
-    func draw(_ encoder: MTLRenderCommandEncoder, viewport: SIMD2<Float>) {
+    func draw(_ encoder: MTLRenderCommandEncoder, viewport: SIMD2<Float>, rodOffset: Float = 0) {
         guard !vertexBuffers.isEmpty else { return }
         refreshBoardIfNeeded()
         let vertices = cloth.vertices()
@@ -1121,7 +1158,8 @@ final class ClothRenderer {
         encoder.setRenderPipelineState(pipeline)
         encoder.setDepthStencilState(depthState)
         encoder.setVertexBuffer(buffer, offset: 0, index: 0)
-        encoder.setVertexBytes(&scene, length: MemoryLayout.size(ofValue: scene), index: 1)
+        var projection = SIMD4<Float>(viewport.x, viewport.y, rodOffset, 0)
+        encoder.setVertexBytes(&projection, length: MemoryLayout.size(ofValue: projection), index: 1)
         encoder.setFragmentBytes(&scene, length: MemoryLayout.size(ofValue: scene), index: 0)
         encoder.setFragmentTexture(mathematics ?? fallbackTexture, index: 0)
         encoder.setFragmentTexture(boardTexture ?? fallbackTexture, index: 1)
@@ -1327,6 +1365,16 @@ struct BannerSettingsView: View {
     var nowTab: some View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
+                sectionLabel("CURTAIN PLACEMENT")
+                HStack(spacing: 4) {
+                    ForEach(CurtainPlacement.allCases, id: \.self) { placement in
+                        chip(placement.rawValue.capitalized, active: m.settings.layout == placement, accent: .teal) {
+                            m.settings.placement = placement
+                            onSave(m.settings, true)
+                            if !m.isVisible { onToggleVisible(); m.isVisible = true }
+                        }
+                    }
+                }
                 sectionLabel("SURFACE")
                 HStack {
                     ForEach([BannerPrint.mesh, .grid], id: \.rawValue) { p in
@@ -1357,10 +1405,12 @@ struct BannerSettingsView: View {
                 }
             }
             VStack(alignment: .leading, spacing: 4) {
-                sliderRow("Position", value: $m.settings.offset, range: -1...1, fmt: "%+.0f%%", scaleDisplay: 100, rebuild: true)
-                Toggle("Split the middle", isOn: Binding(get: { m.settings.split }, set: {
-                    m.settings.split = $0; onSave(m.settings, true)
-                })).toggleStyle(.checkbox)
+                if m.settings.layout == .center {
+                    sliderRow("Position", value: $m.settings.offset, range: -1...1, fmt: "%+.0f%%", scaleDisplay: 100, rebuild: true)
+                    Toggle("Split the middle", isOn: Binding(get: { m.settings.split }, set: {
+                        m.settings.split = $0; onSave(m.settings, true)
+                    })).toggleStyle(.checkbox)
+                }
                 if m.currentPrint == .mesh {
                     HStack {
                         Text("Left-drag a knot. Right-drag to cut.").font(.caption)
@@ -1397,24 +1447,28 @@ struct BannerSettingsView: View {
                 }
             }
             Divider().background(Color.white.opacity(0.12))
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    sectionLabel("WIDTH (PRESETS OR FREE SLIDER)")
-                    Spacer()
-                    Text("\(Int((m.widthFraction * 100).rounded()))% · \(Int((m.widthFraction * Double(m.screenWidth)).rounded())) pt")
-                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.75))
-                }
-                HStack(spacing: 4) {
-                    ForEach(BannerWidth.allCases, id: \.rawValue) { w in
-                        let f = w.fraction(notch: m.notchWidth, screen: m.screenWidth)
-                        chip(w.shortTitle, active: abs(m.widthFraction - f) < 0.025, accent: Color(red: 0.26, green: 0.44, blue: 0.62)) {
-                            m.widthFraction = f; m.settings.widthFraction = f; m.isVisible = true; onSetNow(nil, nil, nil, f, nil, nil)
+            if m.settings.layout == .center {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        sectionLabel("WIDTH (PRESETS OR FREE SLIDER)")
+                        Spacer()
+                        Text("\(Int((m.widthFraction * 100).rounded()))% · \(Int((m.widthFraction * Double(m.screenWidth)).rounded())) pt")
+                            .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.75))
+                    }
+                    HStack(spacing: 4) {
+                        ForEach(BannerWidth.allCases, id: \.rawValue) { w in
+                            let f = w.fraction(notch: m.notchWidth, screen: m.screenWidth)
+                            chip(w.shortTitle, active: abs(m.widthFraction - f) < 0.025, accent: Color(red: 0.26, green: 0.44, blue: 0.62)) {
+                                m.widthFraction = f; m.settings.widthFraction = f; m.isVisible = true; onSetNow(nil, nil, nil, f, nil, nil)
+                            }
                         }
                     }
+                    Slider(value: Binding(get: { m.widthFraction }, set: { v in
+                        m.widthFraction = v; m.settings.widthFraction = v; m.isVisible = true; onSetNow(nil, nil, nil, v, nil, nil)
+                    }), in: 0.14...1.0)
                 }
-                Slider(value: Binding(get: { m.widthFraction }, set: { v in
-                    m.widthFraction = v; m.settings.widthFraction = v; m.isVisible = true; onSetNow(nil, nil, nil, v, nil, nil)
-                }), in: 0.14...1.0)
+            } else {
+                sliderRow("Panel width", value: $m.settings.curtainWidth, range: 0.08...0.35, fmt: "%.0f%%", scaleDisplay: 100, rebuild: true)
             }
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
@@ -1642,11 +1696,12 @@ final class BannerCanvas: MTKView, MTKViewDelegate {
     func refreshBoard() { renderer?.refreshBoardIfNeeded(force: true) }
 
     var strandSpacing: StrandSpacing = .fine { didSet { renderer?.strandSpacing = strandSpacing } }
+    var rodOffset: CGFloat = 0
     private var lastCut: SIMD2<Float>?
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     private func point(_ event: NSEvent) -> SIMD2<Float> {
         let local = convert(event.locationInWindow, from: nil)
-        return SIMD2(Float(local.x - bounds.midX), Float(isFlipped ? local.y : bounds.maxY - local.y)) / clothWidth
+        return SIMD2(Float(local.x - bounds.midX - rodOffset), Float(isFlipped ? local.y : bounds.maxY - local.y)) / clothWidth
     }
     override func mouseDown(with event: NSEvent) {
         renderer?.cloth.grab(at: point(event))
@@ -1732,10 +1787,10 @@ final class BannerCanvas: MTKView, MTKViewDelegate {
         let pointer = NSEvent.mouseLocation
         if let window {
             let inArea = window.frame.contains(pointer) && (window.screen?.visibleFrame.contains(pointer) ?? false)
-            let hit = print == .mesh && inArea && renderer.cloth.nearestPoint(to: BannerCloth.clothPoint(screen: pointer, frame: window.frame, width: clothWidth)) != nil
+            let hit = print == .mesh && inArea && renderer.cloth.nearestPoint(to: BannerCloth.clothPoint(screen: pointer, frame: window.frame.offsetBy(dx: rodOffset, dy: 0), width: clothWidth)) != nil
             window.ignoresMouseEvents = !(hit || renderer.cloth.grabbed != nil || lastCut != nil)
         }
-        if let previousPointer, let frame = window?.frame {
+        if let previousPointer, let frame = window?.frame.offsetBy(dx: rodOffset, dy: 0) {
             let a = BannerCloth.clothPoint(screen: previousPointer, frame: frame, width: clothWidth)
             let b = BannerCloth.clothPoint(screen: pointer, frame: frame, width: clothWidth)
             renderer.cloth.brush(from: a, to: b, over: dtFrame)
@@ -1744,7 +1799,7 @@ final class BannerCanvas: MTKView, MTKViewDelegate {
 
         var targetBody = bodyOpacity
         var targetCollar: Float = 1.0
-        if fadeOnHover && print != .mesh, let frame = window?.frame {
+        if fadeOnHover && print != .mesh, let frame = window?.frame.offsetBy(dx: rodOffset, dy: 0) {
             let dx = abs(Float(pointer.x - frame.midX))
             let yFromTop = Float(frame.maxY - pointer.y)
             if dx <= clothWidth * 0.54 && yFromTop >= -4 && yFromTop <= clothHeight + 18 {
@@ -1762,7 +1817,7 @@ final class BannerCanvas: MTKView, MTKViewDelegate {
 
         renderer.cloth.advance(seconds: dtFrame)
         let drawStart = CACurrentMediaTime()
-        renderer.draw(encoder, viewport: SIMD2(Float(bounds.width), Float(bounds.height)) / clothWidth)
+        renderer.draw(encoder, viewport: SIMD2(Float(bounds.width), Float(bounds.height)) / clothWidth, rodOffset: Float(rodOffset) / clothWidth)
         encoder.endEncoding(); buffer.present(drawable); buffer.commit()
         let drawMs = (CACurrentMediaTime() - drawStart) * 1000.0
         lastFrame = now
@@ -1783,7 +1838,8 @@ final class BannerCanvas: MTKView, MTKViewDelegate {
 
 final class ScreenBanner {
     let screen: NSScreen
-    var window: NSWindow?
+    private var windows: [CurtainSlot: NSWindow] = [:]
+    var canvases: [BannerCanvas] { windows.values.compactMap { $0.contentView as? BannerCanvas } }
     var length: BannerLength = .hidden
     var lastLength: BannerLength = .short
     static let opacities: [Float] = [1, 0.72, 0.46]
@@ -1837,35 +1893,38 @@ final class ScreenBanner {
         f.save()
         if length == .hidden { show(lastLength == .hidden ? .short : lastLength, drop: true, preserve: true); return }
         if needsLayout || needsRebuild { show(lastLength == .hidden ? .short : lastLength, drop: false, preserve: true) }
-        else if let canvas = window?.contentView as? BannerCanvas {
-            canvas.print = currentPrint; canvas.dye = currentDye
-            canvas.bodyOpacity = Float(f.opacity); canvas.fadeOnHover = f.fadeOnHover
-            canvas.hoverOpacity = Float(f.hoverOpacity); canvas.topHoverOpacity = Float(f.topHoverOpacity); canvas.topHoverZone = Float(f.topHoverZone)
-            if p == .board { canvas.refreshBoard() }
+        else {
+            for canvas in canvases {
+                canvas.print = currentPrint; canvas.dye = currentDye
+                canvas.bodyOpacity = Float(f.opacity); canvas.fadeOnHover = f.fadeOnHover
+                canvas.hoverOpacity = Float(f.hoverOpacity); canvas.topHoverOpacity = Float(f.topHoverOpacity); canvas.topHoverZone = Float(f.topHoverZone)
+                if p == .board { canvas.refreshBoard() }
+            }
         }
     }
 
     func scheduleSwitch() {
         timer?.invalidate(); timer = nil
         let mins = BannerConfig.load().minutes
-        guard mins > 0, window != nil else { return }
+        guard mins > 0, !windows.isEmpty else { return }
         timer = Timer.scheduledTimer(withTimeInterval: mins * 60, repeats: false) { [weak self] _ in self?.nextDesign() }
     }
 
     func nextDesign() {
-        guard window != nil else { return show(lastLength) }
+        guard !windows.isEmpty else { return show(lastLength) }
         var f = BannerConfig.load()
         let oldW = widths.current, oldC = cutouts.current
-        if f.widthFraction != nil { f.widthFraction = nil; f.save() }
+        if f.layout == .center && f.widthFraction != nil { f.widthFraction = nil; f.save() }
         prints.advance(f.printPool); dyes.advance(f.dyePool); widths.advance(f.widthPool); cutouts.advance(f.cutoutPool)
-        if widths.current != oldW || cutouts.current != oldC { show(lastLength, drop: widths.current != oldW, preserve: true) }
-        else if let c = window?.contentView as? BannerCanvas { c.print = prints.current!; c.dye = dyes.current! }
+        let widthChanged = f.layout == .center && widths.current != oldW
+        if widthChanged || cutouts.current != oldC { show(lastLength, drop: widthChanged, preserve: true) }
+        else { canvases.forEach { $0.print = currentPrint; $0.dye = currentDye } }
         scheduleSwitch()
     }
 
     func applyConfig(rebuild: Bool = false) {
         let f = BannerConfig.load()
-        guard window != nil else { return }
+        guard !windows.isEmpty else { return }
         let oldW = widths.current, oldC = cutouts.current
         if appliedConfig?.patterns != f.patterns || appliedConfig?.pinnedWeave != f.pinnedWeave { _ = prints.keep(f.printPool) }
         if appliedConfig?.colours != f.colours { _ = dyes.keep(f.dyePool) }
@@ -1873,11 +1932,13 @@ final class ScreenBanner {
         if appliedConfig?.cutouts != f.cutouts { _ = cutouts.keep(f.cutoutPool) }
         appliedConfig = f
         if rebuild || widths.current != oldW || cutouts.current != oldC { show(lastLength, drop: false, preserve: true) }
-        else if let c = window?.contentView as? BannerCanvas {
-            c.strandSpacing = f.strandSpacing; c.wind = Float(f.windStrength); c.damping = Float(f.damping)
-            c.bodyOpacity = Float(f.opacity); c.fadeOnHover = f.fadeOnHover
-            c.hoverOpacity = Float(f.hoverOpacity); c.topHoverOpacity = Float(f.topHoverOpacity); c.topHoverZone = Float(f.topHoverZone)
-            c.print = prints.current!; c.dye = dyes.current!
+        else {
+            for c in canvases {
+                c.strandSpacing = f.strandSpacing; c.wind = Float(f.windStrength); c.damping = Float(f.damping)
+                c.bodyOpacity = Float(f.opacity); c.fadeOnHover = f.fadeOnHover
+                c.hoverOpacity = Float(f.hoverOpacity); c.topHoverOpacity = Float(f.topHoverOpacity); c.topHoverZone = Float(f.topHoverZone)
+                c.print = prints.current!; c.dye = dyes.current!
+            }
         }
         scheduleSwitch()
     }
@@ -1887,20 +1948,21 @@ final class ScreenBanner {
         _ = prints.advance([.board]); _ = dyes.keep(f.dyePool)
         _ = widths.advance([.nearFull]); _ = cutouts.keep(f.cutoutPool)
         show(.short, drop: true, preserve: true)
-        (window?.contentView as? BannerCanvas)?.refreshBoard()
+        canvases.forEach { $0.refreshBoard() }
     }
 
     func show(_ target: BannerLength, drop: Bool = false, preserve: Bool = false) {
         if target == .hidden {
             timer?.invalidate(); timer = nil
-            (window?.contentView as? MTKView)?.isPaused = true
-            window?.orderOut(nil); window = nil; length = .hidden
+            canvases.forEach { $0.isPaused = true }
+            windows.values.forEach { $0.orderOut(nil) }; windows.removeAll()
+            length = .hidden
             BannerStats.shared.active = false
             return
         }
         let f = BannerConfig.load()
         appliedConfig = f
-        let opening = window == nil
+        let opening = windows.isEmpty
         if opening && !preserve {
             prints.advance(f.printPool); dyes.advance(f.dyePool); widths.advance(f.widthPool); cutouts.advance(f.cutoutPool)
         } else {
@@ -1915,33 +1977,57 @@ final class ScreenBanner {
         let rawH: CGFloat = f.heightFraction.map { max(n.height + 36, min(available, CGFloat($0) * available)) } ?? presetH
         let clothH = rawH >= available - 4 ? max(80, available - 16) : rawH
         let winH = min(available, clothH + 36)
-        let rodW: CGFloat = f.widthFraction.map { max(n.width + 40, min(screen.frame.width, CGFloat($0) * screen.frame.width)) }
-            ?? (widths.current ?? .nearFull).rod(notch: n.width, screen: screen.frame.width)
-        let clothW = rodW / CGFloat(BannerCloth.rodSpan)
-        let shift = CGFloat(f.offset) * max(0, (screen.frame.width - rodW) / 2)
-        let winW = min(screen.frame.width - 2 * abs(shift), 2 * clothH + clothW * 1.1)
-        let frame = NSRect(x: centerX + shift - winW / 2, y: top - winH, width: winW, height: winH)
-
-        if opening {
-            guard let dev = MTLCreateSystemDefaultDevice(),
-                  let view = BannerCanvas(frame: NSRect(origin: .zero, size: frame.size), metal: dev) else { return }
-            let w = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-            w.isOpaque = false; w.backgroundColor = .clear; w.hasShadow = false
-            w.ignoresMouseEvents = true; w.level = .statusBar; w.isReleasedWhenClosed = false
-            w.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
-            w.contentView = view
-            window = w
+        let rodW: CGFloat
+        var panels: [(slot: CurtainSlot, frame: CGRect, rodOffset: CGFloat)] = []
+        if f.layout == .center {
+            rodW = f.widthFraction.map { max(n.width + 40, min(screen.frame.width, CGFloat($0) * screen.frame.width)) }
+                ?? (widths.current ?? .nearFull).rod(notch: n.width, screen: screen.frame.width)
+            let shift = CGFloat(f.offset) * max(0, (screen.frame.width - rodW) / 2)
+            let winW = min(screen.frame.width - 2 * abs(shift), 2 * clothH + rodW / CGFloat(BannerCloth.rodSpan) * 1.1)
+            panels.append((.center, CGRect(x: centerX + shift - winW / 2, y: top - winH, width: winW, height: winH), 0))
+        } else {
+            rodW = screen.frame.width * f.curtainWidth
+            // Leave room for the inner hem to swing while clipping precisely at the display edge.
+            let margin = min(rodW * 0.5, screen.frame.width * 0.49 - rodW)
+            let size = CGSize(width: rodW + margin, height: winH)
+            if f.layout != .right {
+                panels.append((.left, CGRect(origin: CGPoint(x: screen.frame.minX, y: top - winH), size: size), -margin / 2))
+            }
+            if f.layout != .left {
+                panels.append((.right, CGRect(origin: CGPoint(x: screen.frame.maxX - size.width, y: top - winH), size: size), margin / 2))
+            }
         }
-        window?.setFrame(frame, display: false)
-        if let canvas = window?.contentView as? BannerCanvas {
+        for slot in Array(windows.keys) where !panels.contains(where: { $0.slot == slot }) {
+            let retired = windows.removeValue(forKey: slot)
+            (retired?.contentView as? BannerCanvas)?.isPaused = true
+            retired?.orderOut(nil)
+        }
+        for panel in panels {
+            let newPanel = windows[panel.slot] == nil
+            if newPanel {
+                guard let dev = MTLCreateSystemDefaultDevice(),
+                      let view = BannerCanvas(frame: CGRect(origin: .zero, size: panel.frame.size), metal: dev) else { continue }
+                let w = NSPanel(contentRect: panel.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+                w.isOpaque = false; w.backgroundColor = .clear; w.hasShadow = false
+                w.ignoresMouseEvents = true; w.level = .statusBar; w.isReleasedWhenClosed = false
+                w.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+                w.contentView = view
+                windows[panel.slot] = w
+            }
+            guard let window = windows[panel.slot], let canvas = window.contentView as? BannerCanvas else { continue }
+            window.setFrame(panel.frame, display: false)
+            canvas.rodOffset = panel.rodOffset
             canvas.strandSpacing = f.strandSpacing; canvas.wind = Float(f.windStrength); canvas.damping = Float(f.damping)
             canvas.dye = dyes.current ?? .garnet; canvas.print = prints.current ?? .robe
             canvas.bodyOpacity = Float(f.opacity); canvas.fadeOnHover = f.fadeOnHover
             canvas.hoverOpacity = Float(f.hoverOpacity); canvas.topHoverOpacity = Float(f.topHoverOpacity); canvas.topHoverZone = Float(f.topHoverZone)
-            canvas.unfold(to: clothH, width: clothW, collar: n.height,
-                          cutout: cutouts.current ?? .none, config: f.physicsConfig, drop: opening || drop)
+            var physics = f.physicsConfig
+            physics.curtainSlot = panel.slot
+            canvas.unfold(to: clothH, width: rodW / CGFloat(BannerCloth.rodSpan), collar: f.layout == .center ? n.height : 0,
+                          cutout: cutouts.current ?? .none, config: physics, drop: newPanel || drop)
+            window.orderFrontRegardless()
         }
-        window?.orderFrontRegardless()
+        guard !windows.isEmpty else { return }
         length = target; lastLength = target
         if opening { scheduleSwitch() }
     }
@@ -2005,7 +2091,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 b.opacityIndex = (b.opacityIndex + 1) % ScreenBanner.opacities.count
                 var f = BannerConfig.load(); f.opacity = Double(ScreenBanner.opacities[b.opacityIndex]); f.save()
                 if b.length == .hidden { b.show(b.lastLength) }
-                (b.window?.contentView as? BannerCanvas)?.bodyOpacity = ScreenBanner.opacities[b.opacityIndex]
+                b.canvases.forEach { $0.bodyOpacity = ScreenBanner.opacities[b.opacityIndex] }
             default: b.nextDesign()
             }
             return noErr
@@ -2060,7 +2146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func toggleBanner() { activeBanner?.show(activeBanner?.length == .hidden ? (activeBanner?.lastLength ?? .short) : .hidden) }
     @objc func nextDesign() { activeBanner?.nextDesign() }
     @objc func showBoard() { activeBanner?.showBoard() }
-    @objc func sendGust() { (activeBanner?.window?.contentView as? BannerCanvas)?.gust() }
+    @objc func sendGust() { activeBanner?.canvases.forEach { $0.gust() } }
     @objc func toggleHoverFade() { edit { $0.fadeOnHover.toggle() } }
     @objc func setHeight(_ i: NSMenuItem) { if let l = BannerLength(rawValue: i.tag) { var f = BannerConfig.load(); f.heightFraction = nil; f.save(); activeBanner?.show(l) } }
     @objc func setQuality(_ i: NSMenuItem) { edit(rebuild: true) { $0.quality = BannerQuality.allCases[i.tag].rawValue } }
@@ -2103,8 +2189,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let view = BannerSettingsView(
             m: store,
             onSave: { [weak self] cfg, rebuild in cfg.save(); self?.banners.forEach { $0.applyConfig(rebuild: rebuild) } },
-            onSetNow: { [weak self] p, d, c, wf, hf, op in self?.activeBanner?.setNow(print: p, dye: d, cutout: c, widthFraction: wf, heightFraction: hf, opacity: op) },
-            onToggleVisible: { [weak self] in self?.toggleBanner() },
+            onSetNow: { [weak b] p, d, c, wf, hf, op in b?.setNow(print: p, dye: d, cutout: c, widthFraction: wf, heightFraction: hf, opacity: op) },
+            onToggleVisible: { [weak b] in guard let b else { return }; b.show(b.length == .hidden ? b.lastLength : .hidden) },
             onNext: { [weak self] in
                 guard let target = self?.activeBanner else { return }
                 target.nextDesign()
@@ -2688,6 +2774,7 @@ if args.contains("--help") || args.contains("-h") {
 
     Usage:
       NotchBanner                         Launch menu-bar app (⌃⌥⌘B to toggle)
+      NotchBanner --edge-curtains         Start with both side curtains until a placement is chosen
       NotchBanner --board <file.json>     Show a live 4K info board from JSON
       NotchBanner --text "Title\\nLine 2"  Show quick text on the 4K velvet board
       NotchBanner --record-demo out.mp4 [--stills dir]   Render 1080p60 Metal demo

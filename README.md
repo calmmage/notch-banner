@@ -20,8 +20,16 @@
 Paste this command into Terminal. It downloads the universal macOS 13+ app, verifies the release archive, and starts the flag in your menu bar. It installs in your Applications folder and starts at login. A Metal-capable Mac is required.
 
 ```bash
-curl -fsSL https://github.com/calmmage/notch-banner/releases/download/v1.3.0/setup-mac.sh | /bin/bash
+curl -fsSL https://github.com/calmmage/notch-banner/releases/download/v1.4.0/setup-mac.sh | /bin/bash
 ```
+
+For a pair of tall curtains framing the desktop, use the edge-curtain installation command:
+
+```bash
+curl -fsSL https://github.com/calmmage/notch-banner/releases/download/v1.4.0/setup-mac.sh | /bin/bash -s -- --edge-curtains
+```
+
+The flag in the menu bar opens **Banner Studio → Now (Live) → Curtain placement**. Pick **Left**, **Right**, **Both**, or **Center**. Panel width adjusts each edge curtain independently of the centered banner’s width. The app remembers the selected side when reopened or updated. The edge preset starts fresh installations in garnet velvet. Upgrades keep the saved material.
 
 In **Banner Studio → Now (Live)**, choose **Open net** for a transparent diamond weave you can grab, cut and mend, or **Grid cloth** for a woven grid on opaque fabric. Choose strand spacing from **28 pt** down to **1.75 pt**. Selecting a fabric print returns to normal pattern rotation.
 
