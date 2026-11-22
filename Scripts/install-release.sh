@@ -42,7 +42,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 cd "$stage"
-echo "Downloading NotchBanner $version…"
+echo "Downloading NotchBanner ${version}..."
 curl --fail --silent --show-error --location --retry 3 "$base/$archive" -o "$archive"
 curl --fail --silent --show-error --location --retry 3 "$base/SHA256SUMS" -o SHA256SUMS
 shasum -a 256 -c SHA256SUMS
